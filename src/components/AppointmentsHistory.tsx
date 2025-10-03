@@ -20,7 +20,7 @@ const historyData: Array<{
   { patientName: "Alys Perez",     doctor: "Dr. Krystal Cruz",  date: "October 5, 2025",  time: "4:00-5:00 PM",  service: "Dental Consultation", status: "Completed" },
 ];
 
-// Updated colors: Completed → Blue, Declined → Red
+
 const badgeClass = (status: HistoryStatus) =>
   status === "Completed"
     ? "bg-blue-100 text-blue-600"

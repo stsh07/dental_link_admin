@@ -47,7 +47,7 @@ const ActiveAppointments = (): JSX.Element => {
         </header>
 
         {/* Scrollable Content */}
-        <div className="flex-1 overflow-y-auto px-8 pt-4">
+        <div className="flex-1 overflow-y-auto px-8 pt-4 pb-8">
           <div className="flex items-end justify-between mb-4">
             <div>
               <h2 className="text-black text-xl font-semibold leading-tight">

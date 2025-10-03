@@ -17,48 +17,67 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 // Logo
 import dentalLinkLogo from "../assets/dentalLink_logo.svg";
 
+const STORAGE_KEY = "sidebar:collapsed";
+
 const Sidebar: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Collapse state (sidebar width + label visibility)
-  const [collapsed, setCollapsed] = useState(false);
+  // --- Collapsed state (persisted) ---
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      return raw ? JSON.parse(raw) : false;
+    } catch {
+      return false;
+    }
+  });
 
-  // Open the Appointments dropdown when on appointments path
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(collapsed));
+    } catch {
+      /* ignore storage errors */
+    }
+  }, [collapsed]);
+
+  // --- Appointments dropdown open state (auto-opens on appointments routes) ---
   const onAppointmentsPath = useMemo(
     () => location.pathname.startsWith("/appointments"),
     [location.pathname]
   );
-  const [appointmentsOpen, setAppointmentsOpen] = useState(onAppointmentsPath);
+  const [appointmentsOpen, setAppointmentsOpen] = useState<boolean>(onAppointmentsPath);
 
   useEffect(() => {
     setAppointmentsOpen(onAppointmentsPath);
   }, [onAppointmentsPath]);
 
-  const handleLogout = (e: React.MouseEvent) => {
+  const handleLogout = (e: React.MouseEvent<HTMLButtonElement>) => {
     e.preventDefault();
     navigate("/");
   };
 
-  // Base styles
+  // Styles
   const linkBase = `
     w-full flex items-center
     ${collapsed ? "justify-center px-0" : "px-6 justify-start"}
     py-3 text-left transition-colors
+    rounded-none
   `;
   const linkActive = "bg-[#30B8DE] text-white";
   const linkInactive = "text-gray-700 hover:bg-gray-50";
 
-    const subLinkBase = `
+  const subLinkBase = `
     w-full block
     ${collapsed ? "px-0 text-center" : "px-12 text-left"}
     py-3 transition-colors
     text-base
+    rounded-none
   `;
   const subLinkActive = "bg-[#30B8DE] text-white";
   const subLinkInactive = "text-gray-600 hover:bg-gray-50";
 
-  // Helper to render a primary nav link (icon + optional label)
+  // --- Helper component for primary nav items ---
   const NavItem = ({
     to,
     Icon,
@@ -74,6 +93,7 @@ const Sidebar: React.FC = () => {
         `${linkBase} ${isActive ? linkActive : linkInactive}`
       }
       title={collapsed ? label : undefined}
+      end={to === "/dashboard"}
     >
       <Icon className={`w-5 h-5 ${collapsed ? "" : "mr-3"}`} />
       {!collapsed && <span className="truncate">{label}</span>}
@@ -87,6 +107,7 @@ const Sidebar: React.FC = () => {
         bg-white shadow-sm relative flex flex-col
         transition-all duration-300 ease-in-out
       `}
+      aria-label="Sidebar"
     >
       {/* Top bar: Logo + Hamburger */}
       <div
@@ -95,7 +116,6 @@ const Sidebar: React.FC = () => {
           ${collapsed ? "justify-center" : "justify-between"}
         `}
       >
-        {/* Show logo only if expanded */}
         {!collapsed && (
           <img
             src={dentalLinkLogo}
@@ -107,6 +127,7 @@ const Sidebar: React.FC = () => {
         {/* Hamburger */}
         <button
           aria-label="Toggle sidebar"
+          aria-pressed={collapsed}
           onClick={() => setCollapsed((c) => !c)}
           className={`
             text-gray-600 hover:text-[#30B8DE]
@@ -131,11 +152,13 @@ const Sidebar: React.FC = () => {
           />
         ) : (
           <>
-            {/* Expanded: parent toggle + submenu */}
+            {/* Parent toggle */}
             <button
               type="button"
               onClick={() => setAppointmentsOpen((o) => !o)}
               className="w-full flex items-center justify-between px-6 py-3 text-gray-700 hover:bg-gray-50 transition-colors"
+              aria-expanded={appointmentsOpen}
+              aria-controls="appointments-submenu"
             >
               <span className="flex items-center">
                 <Calendar className="w-5 h-5 mr-3" />
@@ -148,8 +171,9 @@ const Sidebar: React.FC = () => {
               )}
             </button>
 
+            {/* Submenu */}
             {appointmentsOpen && (
-              <div className="space-y-1">
+              <div id="appointments-submenu" className="space-y-1">
                 <NavLink
                   to="/appointments/active"
                   className={({ isActive }) =>
@@ -180,11 +204,10 @@ const Sidebar: React.FC = () => {
       </nav>
 
       {/* Logout */}
-      <a
-        href="#"
+      <button
         onClick={handleLogout}
         className={`
-          flex items-center
+          flex items-center w-full text-left
           ${collapsed ? "justify-center px-0" : "px-6 justify-start"}
           py-3 text-gray-700 hover:bg-gray-50
           transition-colors
@@ -193,7 +216,7 @@ const Sidebar: React.FC = () => {
       >
         <LogOut className={`w-5 h-5 ${collapsed ? "" : "mr-3"}`} />
         {!collapsed && <span>Logout</span>}
-      </a>
+      </button>
     </aside>
   );
 };
