@@ -1,0 +1,17 @@
+/* Optional: local Museo Sans 700 (used if you have the files) */
+@font-face {
+    font-family: "Museo Sans";
+    src: url("/src/assets/fonts/MuseoSans_700.woff2") format("woff2"),
+         url("/src/assets/fonts/MuseoSans_700.woff") format("woff");
+    font-weight: 700;
+    font-style: normal;
+    font-display: swap;
+  }
+  
+  /* Utility to apply Museo Sans 700 or Montserrat 700 fallback */
+  .font-museo-700 {
+    font-family: "Museo Sans", "Montserrat", system-ui, -apple-system, Segoe UI,
+                 Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+    font-weight: 700;
+  }
+  
