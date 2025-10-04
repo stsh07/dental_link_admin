@@ -23,7 +23,7 @@ const Sidebar: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
 
-  // --- Collapsed state (persisted) ---
+  // Sidebar collapse state (saved in localStorage)
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -37,11 +37,11 @@ const Sidebar: React.FC = () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(collapsed));
     } catch {
-      /* ignore storage errors */
+      /* ignore */
     }
   }, [collapsed]);
 
-  // --- Appointments dropdown open state (auto-opens on appointments routes) ---
+  // Appointment dropdown state
   const onAppointmentsPath = useMemo(
     () => location.pathname.startsWith("/appointments"),
     [location.pathname]
@@ -57,7 +57,7 @@ const Sidebar: React.FC = () => {
     navigate("/");
   };
 
-  // Styles
+  // Base style for nav links
   const linkBase = `
     w-full flex items-center
     ${collapsed ? "justify-center px-0" : "px-6 justify-start"}
@@ -77,7 +77,7 @@ const Sidebar: React.FC = () => {
   const subLinkActive = "bg-[#30B8DE] text-white";
   const subLinkInactive = "text-gray-600 hover:bg-gray-50";
 
-  // --- Helper component for primary nav items ---
+  // Reusable NavItem
   const NavItem = ({
     to,
     Icon,
@@ -109,30 +109,22 @@ const Sidebar: React.FC = () => {
       `}
       aria-label="Sidebar"
     >
-      {/* Top bar: Logo + Hamburger */}
+      {/* Header with Logo & Toggle */}
       <div
-        className={`
-          p-6 flex items-center
-          ${collapsed ? "justify-center" : "justify-between"}
-        `}
+        className={`p-6 flex items-center ${
+          collapsed ? "justify-center" : "justify-between"
+        }`}
       >
         {!collapsed && (
-          <img
-            src={dentalLinkLogo}
-            alt="DentalLink Logo"
-            className="h-6 w-auto"
-          />
+          <img src={dentalLinkLogo} alt="DentalLink Logo" className="h-6 w-auto" />
         )}
 
-        {/* Hamburger */}
         <button
           aria-label="Toggle sidebar"
-          aria-pressed={collapsed}
           onClick={() => setCollapsed((c) => !c)}
-          className={`
-            text-gray-600 hover:text-[#30B8DE]
-            ${collapsed ? "mx-auto" : ""}
-          `}
+          className={`text-gray-600 hover:text-[#30B8DE] ${
+            collapsed ? "mx-auto" : ""
+          }`}
         >
           <Menu className={`${collapsed ? "w-5 h-5" : "w-6 h-6"}`} />
         </button>
@@ -140,19 +132,13 @@ const Sidebar: React.FC = () => {
 
       {/* Navigation */}
       <nav className={`${collapsed ? "mt-0" : "mt-2"} flex-1 space-y-1`}>
-        {/* Dashboard */}
         <NavItem to="/dashboard" Icon={LayoutDashboard} label="Dashboard" />
 
         {/* Appointments */}
         {collapsed ? (
-          <NavItem
-            to="/appointments/active"
-            Icon={Calendar}
-            label="Appointments"
-          />
+          <NavItem to="/appointments/active" Icon={Calendar} label="Appointments" />
         ) : (
           <>
-            {/* Parent toggle */}
             <button
               type="button"
               onClick={() => setAppointmentsOpen((o) => !o)}
@@ -171,7 +157,6 @@ const Sidebar: React.FC = () => {
               )}
             </button>
 
-            {/* Submenu */}
             {appointmentsOpen && (
               <div id="appointments-submenu" className="space-y-1">
                 <NavLink
@@ -206,12 +191,9 @@ const Sidebar: React.FC = () => {
       {/* Logout */}
       <button
         onClick={handleLogout}
-        className={`
-          flex items-center w-full text-left
-          ${collapsed ? "justify-center px-0" : "px-6 justify-start"}
-          py-3 text-gray-700 hover:bg-gray-50
-          transition-colors
-        `}
+        className={`flex items-center w-full text-left ${
+          collapsed ? "justify-center px-0" : "px-6 justify-start"
+        } py-3 text-gray-700 hover:bg-gray-50 transition-colors`}
         title={collapsed ? "Logout" : undefined}
       >
         <LogOut className={`w-5 h-5 ${collapsed ? "" : "mr-3"}`} />

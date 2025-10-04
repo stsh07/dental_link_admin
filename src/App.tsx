@@ -1,4 +1,3 @@
-// src/App.tsx
 import React from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 
@@ -10,7 +9,7 @@ import Patients from "./components/Patients";
 import Services from "./components/Services";
 import Reviews from "./components/Reviews";
 // import Doctors from "./components/Doctors";
-// import ChangePassword from "./components/ChangePassword";
+import ChangePassword from "./components/ChangePassword";
 
 const App: React.FC = () => {
   return (
@@ -18,7 +17,6 @@ const App: React.FC = () => {
       {/* Public */}
       <Route path="/" element={<LoginPage />} />
 
-      {/* Admin pages (each page brings in <Sidebar /> itself) */}
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/appointments/active" element={<ActiveAppointments />} />
       <Route path="/appointments/history" element={<AppointmentsHistory />} />
@@ -26,7 +24,7 @@ const App: React.FC = () => {
       <Route path="/services" element={<Services />} />
       <Route path="/reviews" element={<Reviews />} />
       {/* <Route path="/doctors" element={<Doctors />} /> */}
-      {/* <Route path="/change-password" element={<ChangePassword />} /> */}
+      <Route path="/change-password" element={<ChangePassword />} />
 
       {/* Catch-all: send unknown paths to dashboard (not login) */}
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
