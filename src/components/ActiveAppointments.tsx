@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { BellIcon, SearchIcon, ChevronRight } from "lucide-react";
 import Sidebar from "./Sidebar";
+import profile from "../assets/profile.svg";
 
 const appointmentData = [
   { patientName: "Juan Dela Cruz", doctor: "Dr. Krystal Cruz", date: "October 8, 2025", time: "1:00-2:00 PM", service: "Root Canal", status: "Approved" },
@@ -20,6 +21,11 @@ type TabKey = "all" | "pending" | "approved";
 const ActiveAppointments = (): JSX.Element => {
   const [tab, setTab] = useState<TabKey>("all");
 
+  const filteredAppointments =
+    tab === "all"
+      ? appointmentData
+      : appointmentData.filter((a) => a.status.toLowerCase() === tab);
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       {/* Sidebar */}
@@ -27,7 +33,7 @@ const ActiveAppointments = (): JSX.Element => {
 
       {/* Main Content */}
       <main className="flex-1 min-w-0 flex flex-col">
-        {/* Top App Header */}
+        {/* Header */}
         <header className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
           <h1 className="text-black text-[28px] font-semibold">Appointments</h1>
 
@@ -54,7 +60,7 @@ const ActiveAppointments = (): JSX.Element => {
                 Active Appointments
               </h2>
               <p className="text-black/80 text-sm leading-tight">
-                You have {appointmentData.length} total active appointments.
+                You have {filteredAppointments.length} total active appointments.
               </p>
             </div>
 
@@ -104,8 +110,8 @@ const ActiveAppointments = (): JSX.Element => {
             <div className="p-0 overflow-x-hidden">
               <table className="w-full table-fixed border-collapse">
                 <colgroup>
-                  <col className="w-[22%]" />
-                  <col className="w-[18%]" />
+                  <col className="w-[24%]" />
+                  <col className="w-[15%]" />
                   <col className="w-[15%]" />
                   <col className="w-[12%]" />
                   <col className="w-[15%]" />
@@ -115,34 +121,53 @@ const ActiveAppointments = (): JSX.Element => {
 
                 <thead>
                   <tr className="border-b">
-                    {["Patient Name", "Doctor", "Date", "Time", "Service", "Status", ""].map(
-                      (head) => (
-                        <th
-                          key={head}
-                          className={`text-sm md:text-base font-bold text-gray-900 py-3 ${
-                            head === "Patient Name"
-                              ? "pl-8 text-left"
-                              : head === ""
-                              ? "pr-8 text-right"
-                              : "px-4 text-left"
-                          }`}
-                        >
-                          {head}
-                        </th>
-                      )
-                    )}
+                    {[
+                      "Patient Name",
+                      "Doctor",
+                      "Date",
+                      "Time",
+                      "Service",
+                      "Status",
+                      "",
+                    ].map((head) => (
+                      <th
+                        key={head}
+                        className={`text-sm md:text-base font-bold text-gray-900 py-3 ${
+                          head === "Patient Name"
+                            ? "pl-8 text-left"
+                            : head === ""
+                            ? "pr-8 text-right"
+                            : "px-4 text-left"
+                        }`}
+                      >
+                        {head}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
 
                 <tbody>
-                  {appointmentData.map((appointment, index) => (
-                    <tr key={index} className="border-b border-gray-200 hover:bg-gray-50">
-                      <td className="py-3 pl-8 font-medium text-gray-900 text-sm truncate">
-                        {appointment.patientName}
+                  {filteredAppointments.map((appointment, index) => (
+                    <tr
+                      key={index}
+                      className="border-b border-gray-200 hover:bg-gray-50"
+                    >
+                      {/* Profile */}
+                      <td className="py-3 pl-8 font-medium text-gray-900 text-sm">
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={profile}
+                            alt={`${appointment.patientName} profile`}
+                            className="w-9 h-9 rounded-full bg-white object-cover"
+                          />
+                          <span className="truncate">{appointment.patientName}</span>
+                        </div>
                       </td>
+
                       <td className="py-3 px-4 text-gray-700 text-sm truncate">
                         {appointment.doctor}
                       </td>
+
                       <td className="py-3 px-4 text-gray-700 text-sm truncate">
                         {appointment.date}
                       </td>

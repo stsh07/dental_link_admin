@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { BellIcon, SearchIcon } from "lucide-react";
 import Sidebar from "./Sidebar";
+import profile from "../assets/profile.svg";
 
 type HistoryStatus = "Completed" | "Declined";
 type TabKey = "all" | "completed" | "declined";
@@ -13,13 +14,12 @@ const historyData: Array<{
   service: string;
   status: HistoryStatus;
 }> = [
-  { patientName: "Juan Dela Cruz", doctor: "Dr. Krystal Cruz",  date: "October 1, 2025",  time: "1:00-2:00 PM",  service: "Root Canal",          status: "Completed" },
-  { patientName: "Tripp Palma",    doctor: "Dr. Miguel Suarez", date: "October 2, 2025",  time: "9:00-10:00 AM", service: "Dental Braces",       status: "Declined"   },
-  { patientName: "Drake Palma",    doctor: "Dr. Brenda Estrada",date: "October 3, 2025",  time: "9:00-10:00 AM", service: "Cleaning",            status: "Completed" },
-  { patientName: "Juan Pedro",     doctor: "Dr. Ismael Junio",  date: "October 4, 2025",  time: "9:00-10:00 AM", service: "Tooth Extraction",    status: "Declined"   },
-  { patientName: "Alys Perez",     doctor: "Dr. Krystal Cruz",  date: "October 5, 2025",  time: "4:00-5:00 PM",  service: "Dental Consultation", status: "Completed" },
+  { patientName: "Juan Dela Cruz", doctor: "Dr. Krystal Cruz", date: "October 1, 2025", time: "1:00-2:00 PM", service: "Root Canal", status: "Completed" },
+  { patientName: "Tripp Palma", doctor: "Dr. Miguel Suarez", date: "October 2, 2025", time: "9:00-10:00 AM", service: "Dental Braces", status: "Declined" },
+  { patientName: "Drake Palma", doctor: "Dr. Brenda Estrada", date: "October 3, 2025", time: "9:00-10:00 AM", service: "Cleaning", status: "Completed" },
+  { patientName: "Juan Pedro", doctor: "Dr. Ismael Junio", date: "October 4, 2025", time: "9:00-10:00 AM", service: "Tooth Extraction", status: "Declined" },
+  { patientName: "Alys Perez", doctor: "Dr. Krystal Cruz", date: "October 5, 2025", time: "4:00-5:00 PM", service: "Dental Consultation", status: "Completed" },
 ];
-
 
 const badgeClass = (status: HistoryStatus) =>
   status === "Completed"
@@ -29,7 +29,6 @@ const badgeClass = (status: HistoryStatus) =>
 const AppointmentsHistory = (): JSX.Element => {
   const [tab, setTab] = useState<TabKey>("all");
 
-  // Filtered rows based on tab
   const filteredData =
     tab === "all"
       ? historyData
@@ -61,7 +60,7 @@ const AppointmentsHistory = (): JSX.Element => {
           </div>
         </header>
 
-        {/* Scrollable Content */}
+        {/* Content */}
         <div className="flex-1 overflow-y-auto px-8 pt-4">
           <div className="flex items-end justify-between mb-4">
             <div>
@@ -143,12 +142,22 @@ const AppointmentsHistory = (): JSX.Element => {
                 <tbody>
                   {filteredData.map((row, index) => (
                     <tr key={index} className="border-b border-gray-200 hover:bg-gray-50">
+                      {/* profile */}
                       <td className="py-3 pl-8 font-medium text-gray-900 text-sm truncate">
-                        {row.patientName}
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={profile}
+                            alt={`${row.patientName} profile`}
+                            className="w-9 h-9 rounded-full bg-white object-cover"
+                          />
+                          <span className="truncate">{row.patientName}</span>
+                        </div>
                       </td>
+
                       <td className="py-3 px-4 text-gray-700 text-sm truncate">
                         {row.doctor}
                       </td>
+
                       <td className="py-3 px-4 text-gray-700 text-sm truncate">
                         {row.date}
                       </td>
