@@ -1,5 +1,5 @@
 import Sidebar from "./Sidebar";
-import { BellIcon, SearchIcon, Trash2 } from "lucide-react";
+import { BellIcon, SearchIcon, ChevronRight } from "lucide-react"; // 🧩 replaced Trash2 with ChevronRight
 import profile from "../assets/profile.svg";
 
 type Patient = {
@@ -115,11 +115,11 @@ const Patients = (): JSX.Element => {
                       <td className="py-3 px-4">
                         <button
                           type="button"
-                          className="p-1 rounded hover:bg-gray-100 text-gray-600 hover:text-red-600"
-                          aria-label={`Delete ${p.name}`}
-                          title="Delete"
+                          className="p-1 rounded hover:bg-gray-100 text-gray-600 hover:text-gray-800 transition"
+                          aria-label={`View ${p.name} details`}
+                          title="View Details"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <ChevronRight className="w-4 h-4" /> {/* ⮞ Chevron icon instead of Trash */}
                         </button>
                       </td>
                     </tr>

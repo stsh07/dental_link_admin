@@ -41,7 +41,7 @@ const LoginPage: React.FC = () => {
       {/* Outer Card */}
       <div className="w-full max-w-5xl bg-white rounded-3xl shadow-lg overflow-hidden">
         <div className="flex flex-col md:flex-row">
-          {/* LEFT: Form (65%) */}
+          {/* left  form */}
           <div className="md:basis-[65%] p-10 md:p-14 flex items-center justify-center">
             <div className="w-full max-w-md">
               {/* Logo */}
@@ -68,7 +68,6 @@ const LoginPage: React.FC = () => {
 
               {/* Form */}
               <form onSubmit={handleSubmit} className="space-y-6">
-                {/* Email */}
                 <div>
                   <label
                     htmlFor="email"
