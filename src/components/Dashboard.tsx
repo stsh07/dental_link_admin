@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Bell } from 'lucide-react';
 import Sidebar from './Sidebar';
 
@@ -8,12 +8,49 @@ import completedIcon from '../assets/completed.svg';
 import pendingIcon from '../assets/pending.svg';
 import declinedIcon from '../assets/declined.svg';
 
+type Stats = {
+  total: number;
+  pending: number;
+  confirmed: number;
+  declined: number;
+  cancelled: number;
+  completed: number;
+};
+
 const Dashboard: React.FC = () => {
-  const stats = [
-    { label: 'Total Patients', value: '10', iconSrc: totalPatientIcon },
-    { label: 'Completed', value: '05', iconSrc: completedIcon },
-    { label: 'Pending', value: '05', iconSrc: pendingIcon },
-    { label: 'Declined', value: '0', iconSrc: declinedIcon }
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string>('');
+
+  useEffect(() => {
+    const run = async () => {
+      try {
+        setLoading(true);
+        setErr('');
+        const res = await fetch('http://localhost:4000/api/admin/stats', { cache: 'no-store' });
+        const json: Stats = await res.json();
+        if (!res.ok) throw new Error((json as any).error || 'Failed to load stats');
+        setStats(json);
+      } catch (e: any) {
+        setErr(e?.message || 'Failed to load stats');
+        setStats(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+    run();
+  }, []);
+
+  const totalPatients = (stats?.confirmed || 0) + (stats?.completed || 0);
+  const completed = stats?.completed || 0;
+  const pending = stats?.pending || 0;
+  const declined = stats?.declined || 0;
+
+  const cards = [
+    { label: 'Total Patients', value: totalPatients, iconSrc: totalPatientIcon },
+    { label: 'Completed', value: completed, iconSrc: completedIcon },
+    { label: 'Pending', value: pending, iconSrc: pendingIcon },
+    { label: 'Declined', value: declined, iconSrc: declinedIcon },
   ];
 
   const services = [
@@ -57,15 +94,19 @@ const Dashboard: React.FC = () => {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
-          {/* Stats */}
+          {/* Status / error */}
+          {loading && <p className="text-sm text-gray-500 mb-3">Loading stats…</p>}
+          {!!err && <p className="text-sm text-red-600 mb-3">Error: {err}</p>}
+
+          {/* Stats cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
-            {stats.map((stat, index) => (
-              <div key={index} className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
+            {cards.map((c) => (
+              <div key={c.label} className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
                 <div className="flex items-center">
-                  <img src={stat.iconSrc} alt={stat.label} className="w-12 h-12 mr-4 object-contain" />
+                  <img src={c.iconSrc} alt={c.label} className="w-12 h-12 mr-4 object-contain" />
                   <div>
-                    <p className="text-sm text-gray-600">{stat.label}</p>
-                    <p className="text-2xl font-bold text-gray-900">{stat.value}</p>
+                    <p className="text-sm text-gray-600">{c.label}</p>
+                    <p className="text-2xl font-bold text-gray-900">{c.value}</p>
                   </div>
                 </div>
               </div>
