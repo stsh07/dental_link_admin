@@ -44,6 +44,18 @@ const prettyDate = (ymd: string) => {
 };
 const firstNameOf = (full: string) => (full || "").trim().split(/\s+/)[0] || "-";
 
+/* ===== Fallbacks on render (only used if value truly missing) ===== */
+const EMDASH = "—";
+const showText = (v: string | null | undefined, em = true) => {
+  if (v == null) return em ? EMDASH : "-";
+  const s = String(v).trim();
+  return s ? s : (em ? EMDASH : "-");
+};
+const showNumber = (v: number | null | undefined) => {
+  if (v == null || Number.isNaN(v) || v <= 0) return "-";
+  return String(v);
+};
+
 export default function AppointmentPopup({
   open,
   data,
@@ -90,20 +102,20 @@ export default function AppointmentPopup({
         <main className="flex-1 p-8">
           <h2 className="text-xl font-bold text-gray-900 mb-4">Patient Details</h2>
           <div className="space-y-1 text-[13px] text-gray-800">
-            <div><span className="font-semibold">Full name:</span> {data.patientName || "-"}</div>
-            <div><span className="font-semibold">Email:</span> {data.email || "-"}</div>
-            <div><span className="font-semibold">Phone:</span> {data.phone || "-"}</div>
-            <div><span className="font-semibold">Age:</span> {data.age ?? "-"}</div>
-            <div><span className="font-semibold">Gender:</span> {data.gender || "-"}</div>
-            <div><span className="font-semibold">Address:</span> {data.address || "-"}</div>
+            <div><span className="font-semibold">Full name:</span> {showText(data.patientName, true)}</div>
+            <div><span className="font-semibold">Email:</span> {showText(data.email, true)}</div>
+            <div><span className="font-semibold">Phone:</span> {showText(data.phone, true)}</div>
+            <div><span className="font-semibold">Age:</span> {showNumber(data.age)}</div>
+            <div><span className="font-semibold">Gender:</span> {showText(data.gender, true)}</div>
+            <div><span className="font-semibold">Address:</span> {showText(data.address, false)}</div>
           </div>
 
           <div className="h-5" />
 
           <h2 className="text-xl font-bold text-gray-900 mb-4">Appointment Details</h2>
           <div className="space-y-1 text-[13px] text-gray-800">
-            <div><span className="font-semibold">Dentist:</span> {data.doctor}</div>
-            <div><span className="font-semibold">Procedure:</span> {data.service}</div>
+            <div><span className="font-semibold">Dentist:</span> {showText(data.doctor, true)}</div>
+            <div><span className="font-semibold">Procedure:</span> {showText(data.service, true)}</div>
             <div><span className="font-semibold">Date:</span> {prettyDate(data.date)}</div>
             <div><span className="font-semibold">Time:</span> {timeRange}</div>
             <div>
@@ -148,13 +160,6 @@ export default function AppointmentPopup({
                   className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-3 rounded-xl"
                 >
                   {actionLoading ? "Working..." : "Completed"}
-                </button>
-                <button
-                  disabled={actionLoading}
-                  onClick={onDecline}
-                  className="flex-1 bg-[#EF4444] hover:bg-[#d63d3d] disabled:opacity-60 text-white font-semibold py-3 rounded-xl"
-                >
-                  {actionLoading ? "Working..." : "Decline"}
                 </button>
               </>
             )}

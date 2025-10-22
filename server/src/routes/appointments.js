@@ -99,7 +99,7 @@ router.get('/appointments', async (req, res) => {
   try {
     const { status } = req.query;
     let sql = `
-      SELECT id, full_name, email, age, gender, phone,
+      SELECT id, full_name, email, age, gender, phone, address,
              preferred_date, preferred_time, dentist_id, procedure_id,
              status, notes, created_at, updated_at
       FROM appointments`;
@@ -118,7 +118,7 @@ router.get('/appointments', async (req, res) => {
 router.post('/appointments', async (req, res) => {
   try {
     let {
-      fullName, email, age, gender, phone,
+      fullName, email, age, gender, phone, address,
       preferredDate, preferredTime,
       dentistId, procedureId, dentist, procedure, notes
     } = req.body || {};
@@ -132,6 +132,7 @@ router.post('/appointments', async (req, res) => {
     if (age == null) missing.push('age');
     if (!gender) missing.push('gender');
     if (!phone) missing.push('phone');
+    if (!address) missing.push('address');
     if (!preferredDate) missing.push('preferredDate');
     if (!preferredTime) missing.push('preferredTime');
 
@@ -171,12 +172,12 @@ router.post('/appointments', async (req, res) => {
 
     const [r] = await pool.query(
       `INSERT INTO appointments
-        (full_name, email, age, gender, phone,
+        (full_name, email, age, gender, phone, address,
          preferred_date, preferred_time, dentist_id, procedure_id,
          status, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
       [
-        fullName, email, Number(age), gender, phone,
+        fullName, email, Number(age), gender, phone, address,
         preferredDate, preferredTime, dentistId, procedureId, notes ?? null
       ]
     );
@@ -193,7 +194,8 @@ router.patch('/appointments/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body || {};
-    const allowed = ['PENDING','CONFIRMED','DECLINED','CANCELLED','COMPLETED'];
+    // match your schema: no CANCELLED
+    const allowed = ['PENDING','CONFIRMED','DECLINED','COMPLETED'];
     if (!allowed.includes(status)) return res.status(400).json({ error: 'INVALID_STATUS' });
 
     const [r] = await pool.query('UPDATE appointments SET status=? WHERE id=?', [status, id]);
@@ -217,7 +219,7 @@ router.get('/admin/appointments', async (req, res) => {
 
     let where = 'WHERE 1=1';
     const params = [];
-    if (status && ['PENDING','CONFIRMED','CANCELLED','DECLINED','COMPLETED'].includes(status)) {
+    if (status && ['PENDING','CONFIRMED','DECLINED','COMPLETED'].includes(status)) {
       where += ' AND a.status=?';
       params.push(status);
     }
@@ -279,7 +281,7 @@ router.get('/admin/appointments/:id', async (req, res) => {
          a.phone           AS phone,
          a.age             AS age,
          a.gender          AS gender,
-         a.address         AS address,      -- ok if column doesn’t exist; else returns null
+         a.address         AS address,
          a.notes           AS notes,
          a.preferred_date  AS preferredDate,
          a.preferred_time  AS preferredTime,
@@ -312,6 +314,32 @@ router.get('/admin/appointments/:id', async (req, res) => {
     });
   } catch (err) {
     console.error('GET /admin/appointments/:id error:', err);
+    res.status(500).json({ error: 'SERVER_ERROR' });
+  }
+});
+
+/* ===== ADMIN: dashboard stats ===== */
+router.get('/admin/stats', async (_req, res) => {
+  try {
+    const [[row]] = await pool.query(
+      `SELECT
+         COUNT(*)                AS total,
+         SUM(status='PENDING')   AS pending,
+         SUM(status='CONFIRMED') AS confirmed,
+         SUM(status='DECLINED')  AS declined,
+         SUM(status='COMPLETED') AS completed
+       FROM appointments`
+    );
+
+    res.json({
+      total: Number(row.total || 0),
+      pending: Number(row.pending || 0),
+      confirmed: Number(row.confirmed || 0), // "Approved" in UI
+      declined: Number(row.declined || 0),
+      completed: Number(row.completed || 0),
+    });
+  } catch (err) {
+    console.error('GET /admin/stats error:', err);
     res.status(500).json({ error: 'SERVER_ERROR' });
   }
 });

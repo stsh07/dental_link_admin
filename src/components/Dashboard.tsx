@@ -3,7 +3,7 @@ import { Bell } from 'lucide-react';
 import Sidebar from './Sidebar';
 
 // SVGs
-import totalPatientIcon from '../assets/total_patient.svg';
+import totalPatientIcon from '../assets/total_patient.svg'; // reuse for "Approved" if you like
 import completedIcon from '../assets/completed.svg';
 import pendingIcon from '../assets/pending.svg';
 import declinedIcon from '../assets/declined.svg';
@@ -11,9 +11,8 @@ import declinedIcon from '../assets/declined.svg';
 type Stats = {
   total: number;
   pending: number;
-  confirmed: number;
+  confirmed: number; // Approved in UI
   declined: number;
-  cancelled: number;
   completed: number;
 };
 
@@ -22,35 +21,43 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string>('');
 
+  const fetchStats = async () => {
+    try {
+      setLoading(true);
+      setErr('');
+      const res = await fetch('http://localhost:4000/api/admin/stats', { cache: 'no-store' });
+      const json: Stats = await res.json();
+      if (!res.ok) throw new Error((json as any).error || 'Failed to load stats');
+      setStats(json);
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to load stats');
+      setStats(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
-    const run = async () => {
-      try {
-        setLoading(true);
-        setErr('');
-        const res = await fetch('http://localhost:4000/api/admin/stats', { cache: 'no-store' });
-        const json: Stats = await res.json();
-        if (!res.ok) throw new Error((json as any).error || 'Failed to load stats');
-        setStats(json);
-      } catch (e: any) {
-        setErr(e?.message || 'Failed to load stats');
-        setStats(null);
-      } finally {
-        setLoading(false);
-      }
-    };
-    run();
+    fetchStats();
   }, []);
 
-  const totalPatients = (stats?.confirmed || 0) + (stats?.completed || 0);
+  // Optional: live refresh when ActiveAppointments updates something
+  useEffect(() => {
+    const refresh = () => fetchStats();
+    window.addEventListener('appointments-updated', refresh);
+    return () => window.removeEventListener('appointments-updated', refresh);
+  }, []);
+
+  const approved  = stats?.confirmed || 0; // DB "CONFIRMED"
   const completed = stats?.completed || 0;
-  const pending = stats?.pending || 0;
-  const declined = stats?.declined || 0;
+  const pending   = stats?.pending || 0;
+  const declined  = stats?.declined || 0;
 
   const cards = [
-    { label: 'Total Patients', value: totalPatients, iconSrc: totalPatientIcon },
+    { label: 'Approved',  value: approved,  iconSrc: totalPatientIcon },
     { label: 'Completed', value: completed, iconSrc: completedIcon },
-    { label: 'Pending', value: pending, iconSrc: pendingIcon },
-    { label: 'Declined', value: declined, iconSrc: declinedIcon },
+    { label: 'Pending',   value: pending,   iconSrc: pendingIcon },
+    { label: 'Declined',  value: declined,  iconSrc: declinedIcon },
   ];
 
   const services = [

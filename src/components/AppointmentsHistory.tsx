@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BellIcon, SearchIcon } from "lucide-react";
 import Sidebar from "./Sidebar";
 import profile from "../assets/profile.svg";
@@ -17,8 +17,7 @@ type TabKey = "all" | "completed" | "declined";
 type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
 
 const badgeClass = (s: Row["status"]) =>
-  s === "COMPLETED" ? "bg-blue-100 text-blue-600" : // blue
-                      "bg-red-100 text-red-700";    // declined = red
+  s === "COMPLETED" ? "bg-blue-100 text-blue-600" : "bg-red-100 text-red-700";
 
 const to12h = (hhmm: string) => {
   const [h, m] = hhmm.split(":").map(Number);
@@ -45,36 +44,79 @@ export default function AppointmentsHistory(): JSX.Element {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      try {
-        const u = new URL("http://localhost:4000/api/admin/appointments");
-        // pull all then filter on client; you can call API 2x with status if you prefer
-        u.searchParams.set("page","1");
-        u.searchParams.set("pageSize","200");
-        if (query.trim()) u.searchParams.set("search", query.trim());
-        const res = await fetch(u.toString(), { cache: "no-store" });
-        const json: ApiResponse = await res.json();
-        const items = (json.items || []) as Array<{
-          id:number, patientName:string, doctor:string, date:string, timeStart:string, service:string, status:string
-        }>;
-        const onlyHistory = items.filter(x => ["COMPLETED","DECLINED"].includes(x.status));
-        setRows(onlyHistory as Row[]);
-      } catch (e) {
-        setRows([]);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [query]);
+  const abortRef = useRef<AbortController | null>(null);
 
-  const filtered = useMemo(() => {
-    if (tab === "completed") return rows.filter(r => r.status === "COMPLETED");
-    if (tab === "declined")  return rows.filter(r => r.status === "DECLINED");
-    return rows;
-  }, [rows, tab]);
+  const load = async () => {
+    // cancel any in-flight fetch before starting a new one
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
+    setLoading(true);
+    try {
+      const u = new URL("http://localhost:4000/api/admin/appointments");
+      u.searchParams.set("page","1");
+      u.searchParams.set("pageSize","200");
+      if (query.trim()) u.searchParams.set("search", query.trim());
+
+      // Ask server for just what we need when on a specific tab
+      if (tab === "completed") u.searchParams.set("status", "COMPLETED");
+      if (tab === "declined")  u.searchParams.set("status", "DECLINED");
+
+      const res = await fetch(u.toString(), { cache: "no-store", signal: ac.signal });
+      const json: ApiResponse = await res.json();
+
+      const items = (json.items || []) as Array<{
+        id:number, patientName:string, doctor:string, date:string, timeStart:string, service:string, status:string
+      }>;
+
+      // If "all" tab, show only completed + declined
+      const onlyHistory = tab === "all"
+        ? items.filter(x => x.status === "COMPLETED" || x.status === "DECLINED")
+        : items;
+
+      setRows(onlyHistory as Row[]);
+    } catch (e) {
+      // ignore abort errors; reset list for other errors
+      if ((e as any).name !== "AbortError") setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Initial load + when tab or query changes
+  useEffect(() => { load(); }, [tab, query]);
+
+  // Light polling so items move into History shortly after marking
+  useEffect(() => {
+    const id = setInterval(load, 5000); // 5s
+    return () => clearInterval(id);
+  }, [tab, query]);
+
+  // Refetch when window regains focus
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", load);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", load);
+    };
+  }, [tab, query]);
+
+  // 🔔 NEW: reload immediately when ActiveAppointments broadcasts an update
+  useEffect(() => {
+    const handler = () => load();
+    window.addEventListener("appointments-updated", handler);
+    return () => window.removeEventListener("appointments-updated", handler);
+  }, [tab, query]);
+
+  // Cleanup: abort any in-flight fetch when unmounting
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
+  const filtered = rows;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">

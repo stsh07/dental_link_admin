@@ -52,6 +52,130 @@ const badgeClasses = (s: ApiAppointment["status"]) =>
 
 const isActive = (s: ApiAppointment["status"]) => s === "PENDING" || s === "CONFIRMED";
 
+/* ===================== DETAIL EXTRACTOR HELPERS ===================== */
+const isBlank = (v: any) => v == null || (typeof v === "string" && v.trim() === "");
+
+const scan = (
+  obj: any,
+  pred: (key: string, val: any, path: string[]) => boolean,
+  path: string[] = []
+): { path: string[]; value: any } | null => {
+  if (!obj || typeof obj !== "object") return null;
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      const child = obj[i];
+      const got = scan(child, pred, [...path, String(i)]);
+      if (got) return got;
+    }
+    return null;
+  }
+  for (const [k, v] of Object.entries(obj)) {
+    if (pred(k, v, path)) return { path: [...path, k], value: v };
+    const got = scan(v, pred, [...path, k]);
+    if (got) return got;
+  }
+  return null;
+};
+
+const findTextByKeys = (obj: any, keys: string[]): string | null => {
+  const keySet = new Set(keys.map(k => k.toLowerCase()));
+  const res = scan(obj, (k, v) => keySet.has(k.toLowerCase()) && !isBlank(v));
+  return res ? String(res.value).trim() : null;
+};
+const findNumberByKeys = (obj: any, keys: string[]): number | null => {
+  const keySet = new Set(keys.map(k => k.toLowerCase()));
+  const res = scan(obj, (k, v) => keySet.has(k.toLowerCase()) && Number.isFinite(Number(v)));
+  if (!res) return null;
+  const n = Number(res.value);
+  return Number.isFinite(n) ? n : null;
+};
+const ageFromDob = (dobStr: string | null): number | null => {
+  if (!dobStr) return null;
+  const d = new Date(dobStr);
+  if (Number.isNaN(d.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age > 0 ? age : null;
+};
+const findEmailByPattern = (obj: any): string | null => {
+  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+  const res = scan(obj, (_k, v) => typeof v === "string" && emailRe.test(v.trim()));
+  return res ? res.value.trim() : null;
+};
+const findPhoneByPattern = (obj: any): string | null => {
+  const res = scan(obj, (_k, v) => {
+    if (typeof v !== "string" && typeof v !== "number") return false;
+    const s = String(v);
+    const digits = s.replace(/\D/g, "");
+    return digits.length >= 7;
+  });
+  return res ? String(res.value).trim() : null;
+};
+const findGenderByPattern = (obj: any): string | null => {
+  const res = scan(obj, (_k, v) => {
+    if (isBlank(v)) return false;
+    const s = String(v).trim().toLowerCase();
+    return ["male", "female", "m", "f", "other", "non-binary"].includes(s);
+  });
+  return res ? String(res.value).trim() : null;
+};
+
+const toAddressString = (val: any): string | null => {
+  if (typeof val === "string" && !isBlank(val)) return val.trim();
+  if (val && typeof val === "object") {
+    const parts = [
+      val.line1 ?? val.street ?? val.street1 ?? val.addressLine1,
+      val.line2 ?? val.barangay ?? val.addressLine2,
+      val.city ?? val.municipality,
+      val.province ?? val.state,
+      val.zip ?? val.postalCode,
+    ];
+    const s = parts.filter(p => !isBlank(p)).map(String).join(", ");
+    return s || null;
+  }
+  return null;
+};
+const findAddress = (obj: any): string | null => {
+  const k = scan(obj, (key, v) => /address/i.test(key) && !isBlank(v));
+  const chosen = k ? toAddressString(k.value) : null;
+  if (chosen) return chosen;
+  const line1 = findTextByKeys(obj, ["line1", "street", "addressLine1"]);
+  const line2 = findTextByKeys(obj, ["line2", "barangay", "addressLine2"]);
+  const city  = findTextByKeys(obj, ["city", "municipality"]);
+  const prov  = findTextByKeys(obj, ["province", "state"]);
+  const zip   = findTextByKeys(obj, ["zip", "postalCode"]);
+  const s = [line1, line2, city, prov, zip].filter(x => !isBlank(x)).join(", ");
+  return s || null;
+};
+
+const extractDetail = (raw: any): Partial<AppointmentDetail> => {
+  const roots = [raw, raw?.data, raw?.appointment, raw?.result, raw?.payload].filter(Boolean);
+  let email  = null as string | null;
+  let phone  = null as string | null;
+  let gender = null as string | null;
+  let age    = null as number | null;
+  let address= null as string | null;
+  let notes  = null as string | null;
+
+  for (const r of roots) {
+    email  ||= findTextByKeys(r, ["email", "patientEmail", "userEmail", "contactEmail"]) || findEmailByPattern(r);
+    phone  ||= findTextByKeys(r, ["phone", "phoneNumber", "contactNumber", "mobile", "contactNo", "tel", "telephone"]) || findPhoneByPattern(r);
+    gender ||= findTextByKeys(r, ["gender", "sex"]) || findGenderByPattern(r);
+    notes  ||= findTextByKeys(r, ["notes", "note", "remarks"]);
+    age    ||= findNumberByKeys(r, ["age", "patientAge"]);
+    if (!age) {
+      const dob = findTextByKeys(r, ["dob", "dateOfBirth", "birthDate", "birthday"]);
+      age = ageFromDob(dob || null);
+    }
+    address ||= findAddress(r);
+  }
+
+  return { email, phone, gender, notes, age, address };
+};
+/* =================================================================== */
+
 export default function ActiveAppointments(): JSX.Element {
   const navigate = useNavigate();
 
@@ -65,6 +189,7 @@ export default function ActiveAppointments(): JSX.Element {
   const [selected, setSelected] = useState<AppointmentDetail | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
+  // Load active appointments (server returns all; we filter by tab)
   useEffect(() => {
     const run = async () => {
       try {
@@ -91,27 +216,25 @@ export default function ActiveAppointments(): JSX.Element {
   const filtered = useMemo(() => {
     if (tab === "pending")  return items.filter(a => a.status === "PENDING");
     if (tab === "approved") return items.filter(a => a.status === "CONFIRMED");
-    // "All" in Active = Pending + Approved only
-    return items.filter(a => isActive(a.status));
+    return items.filter(a => isActive(a.status)); // All = Pending + Approved
   }, [items, tab]);
 
-  // details
+  // fetch details for popup
   const fetchDetails = async (id: number) => {
     const res = await fetch(`http://localhost:4000/api/admin/appointments/${id}`, { cache: "no-store" });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json.error || "load details failed");
-    return json as AppointmentDetail;
+    const raw = await res.json();
+    if (!res.ok) throw new Error(raw?.error || "load details failed");
+    return extractDetail(raw) as Partial<AppointmentDetail>;
   };
 
   const openPopup = async (a: ApiAppointment) => {
-    // seed minimal, then hydrate
     setSelected({
       id: a.id,
-      patientName: a.patientName,
-      email: "—",
+      patientName: a.patientName ?? "",
+      email: null,
       age: null,
-      gender: "—",
-      phone: "—",
+      gender: null,
+      phone: null,
       address: null,
       notes: null,
       doctor: a.doctor,
@@ -121,15 +244,16 @@ export default function ActiveAppointments(): JSX.Element {
       status: a.status,
     });
     setOpen(true);
+
     try {
-      const full = await fetchDetails(a.id);
-      setSelected(prev => prev ? { ...prev, ...full } : full);
+      const detail = await fetchDetails(a.id);
+      setSelected(prev => prev ? { ...prev, ...detail } as AppointmentDetail : prev);
     } catch (e) {
       console.error(e);
     }
   };
 
-  // local + popup status
+  // local + popup status update
   const updateStatusLocal = (id: number, status: ApiAppointment["status"]) => {
     setItems(prev => prev.map(it => it.id === id ? { ...it, status } : it));
     setSelected(prev => prev ? { ...prev, status } : prev);
@@ -147,15 +271,14 @@ export default function ActiveAppointments(): JSX.Element {
     }
   };
 
+  // Pending -> Approve
   const handleApprove = async () => {
     if (!selected) return;
     try {
       setActionLoading(true);
       await patchStatus(selected.id, "CONFIRMED");
       updateStatusLocal(selected.id, "CONFIRMED");
-      // ➜ close popup after approve; popup with "Completed" shows only when chevron is clicked again
       setOpen(false);
-      // optional: clear selection (prevents stale detail if you re-open another)
       setSelected(null);
     } catch (e) {
       alert((e as any).message || "Failed to approve");
@@ -164,14 +287,17 @@ export default function ActiveAppointments(): JSX.Element {
     }
   };
 
+  // Pending -> Decline (goes to History)
   const handleDecline = async () => {
     if (!selected) return;
     try {
       setActionLoading(true);
       await patchStatus(selected.id, "DECLINED");
-      updateStatusLocal(selected.id, "DECLINED");
+      updateStatusLocal(selected.id, "DECLINED"); // disappears from Active views
       setOpen(false);
       setSelected(null);
+      // notify history + navigate
+      window.dispatchEvent(new Event("appointments-updated"));
       navigate("/appointment-history");
     } catch (e) {
       alert((e as any).message || "Failed to decline");
@@ -180,14 +306,17 @@ export default function ActiveAppointments(): JSX.Element {
     }
   };
 
+  // Approved -> Completed (goes to History)
   const handleComplete = async () => {
     if (!selected) return;
     try {
       setActionLoading(true);
       await patchStatus(selected.id, "COMPLETED");
-      updateStatusLocal(selected.id, "COMPLETED");
+      updateStatusLocal(selected.id, "COMPLETED"); // disappears from Active views
       setOpen(false);
       setSelected(null);
+      // notify history + navigate
+      window.dispatchEvent(new Event("appointments-updated"));
       navigate("/appointment-history");
     } catch (e) {
       alert((e as any).message || "Failed to complete");
@@ -314,7 +443,6 @@ export default function ActiveAppointments(): JSX.Element {
                           </span>
                         </td>
                         <td className="py-3 pr-8">
-                          {/* ✅ Chevron ONLY opens the popup */}
                           <div className="flex justify-end">
                             <button
                               aria-label="Open details"
@@ -341,7 +469,7 @@ export default function ActiveAppointments(): JSX.Element {
             </div>
           </div>
 
-          {/* Popup lives inside this scroll area */}
+          {/* Popup */}
           <AppointmentPopup
             open={open}
             data={selected}
