@@ -1,4 +1,4 @@
-const express = require('express');
+const express = require('express'); 
 const router = express.Router();
 const { pool } = require('../db');
 
@@ -194,7 +194,6 @@ router.patch('/appointments/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body || {};
-    // match your schema: no CANCELLED
     const allowed = ['PENDING','CONFIRMED','DECLINED','COMPLETED'];
     if (!allowed.includes(status)) return res.status(400).json({ error: 'INVALID_STATUS' });
 
@@ -269,7 +268,7 @@ router.get('/admin/appointments', async (req, res) => {
   }
 });
 
-/* ===== ADMIN: single detail (returns all patient fields) ===== */
+/* ===== ADMIN: single detail ===== */
 router.get('/admin/appointments/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -334,12 +333,74 @@ router.get('/admin/stats', async (_req, res) => {
     res.json({
       total: Number(row.total || 0),
       pending: Number(row.pending || 0),
-      confirmed: Number(row.confirmed || 0), // "Approved" in UI
+      confirmed: Number(row.confirmed || 0),
       declined: Number(row.declined || 0),
       completed: Number(row.completed || 0),
     });
   } catch (err) {
     console.error('GET /admin/stats error:', err);
+    res.status(500).json({ error: 'SERVER_ERROR' });
+  }
+});
+
+/* ===== ADMIN: patients list (CONFIRMED + COMPLETED) — MariaDB-safe (no ANY_VALUE) ===== */
+router.get('/admin/patients', async (req, res) => {
+  try {
+    const search = (req.query.search || '').toString().trim();
+    const page = Math.max(1, parseInt(req.query.page || '1', 10));
+    const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize || '50', 10)));
+    const offset = (page - 1) * pageSize;
+
+    // Build WHERE
+    const whereParts = [`a.status IN ('CONFIRMED','COMPLETED')`];
+    const params = [];
+    if (search) {
+      whereParts.push(`(a.full_name LIKE ? OR a.email LIKE ? OR a.phone LIKE ?)`);
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+    const where = `WHERE ${whereParts.join(' AND ')}`;
+
+    // Count distinct patients (by name+email+phone)
+    const countSql = `
+      SELECT COUNT(*) AS total
+      FROM (
+        SELECT 1
+        FROM appointments a
+        ${where}
+        GROUP BY a.full_name, a.email, a.phone
+      ) t`;
+    const [[{ total }]] = await pool.query(countSql, params);
+
+    // Pick one row per patient; use MAX() for representative values and latest visit date
+    const dataSql = `
+      SELECT
+        MAX(a.id)             AS id,
+        a.full_name           AS name,
+        MAX(a.age)            AS age,
+        MAX(a.gender)         AS gender,
+        MAX(a.email)          AS email,
+        MAX(a.phone)          AS phone,
+        MAX(a.preferred_date) AS lastVisit
+      FROM appointments a
+      ${where}
+      GROUP BY a.full_name, a.email, a.phone
+      ORDER BY lastVisit DESC
+      LIMIT ? OFFSET ?`;
+    const [rows] = await pool.query(dataSql, [...params, pageSize, offset]);
+
+    const items = rows.map(r => ({
+      id: Number(r.id),
+      name: r.name,
+      age: r.age != null ? Number(r.age) : null,
+      gender: r.gender || null,
+      email: r.email || null,
+      phone: r.phone || null,
+      lastVisit: r.lastVisit, // YYYY-MM-DD
+    }));
+
+    res.json({ page, pageSize, total, items });
+  } catch (err) {
+    console.error('GET /admin/patients error:', err);
     res.status(500).json({ error: 'SERVER_ERROR' });
   }
 });

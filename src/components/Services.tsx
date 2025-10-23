@@ -26,17 +26,69 @@ interface Service {
 
 const Services = (): JSX.Element => {
   const services: Service[] = [
-    { id: 1, name: "Dental Braces", description: "Orthodontic treatment using brackets and wires (or aligners) to straighten teeth and correct bite issues.", appointments: 48, image: dentalBraces },
-    { id: 2, name: "Cleaning", description: "Professional removal of plaque, tartar, and stains to prevent cavities and gum disease.", appointments: 156, image: cleaning },
-    { id: 3, name: "Root Canal", description: "Removes infected or inflamed pulp from inside the tooth, cleans it, and seals it to save the tooth.", appointments: 42, image: rootCCanal },
-    { id: 4, name: "Tooth Extraction", description: "Removal of a tooth that is decayed, damaged, or impacted (like wisdom teeth).", appointments: 73, image: toothExtraction },
-    { id: 5, name: "Dental Consultation", description: "Initial check-up where the dentist examines your teeth, gums, and mouth, often with x-rays if needed.", appointments: 124, image: dentalConsultation },
-    { id: 6, name: "Tooth Filling", description: "Restores a decayed or damaged tooth using materials like composite resin, amalgam, or porcelain.", appointments: 89, image: toothFilling },
+    {
+      id: 1,
+      name: "Dental Braces",
+      description:
+        "Orthodontic treatment using brackets and wires (or aligners) to straighten teeth and correct bite issues.",
+      appointments: 48,
+      image: dentalBraces,
+    },
+    {
+      id: 2,
+      name: "Cleaning",
+      description:
+        "Professional removal of plaque, tartar, and stains to prevent cavities and gum disease.",
+      appointments: 156,
+      image: cleaning,
+    },
+    {
+      id: 3,
+      name: "Root Canal",
+      description:
+        "Removes infected or inflamed pulp from inside the tooth, cleans it, and seals it to save the tooth.",
+      appointments: 42,
+      image: rootCCanal,
+    },
+    {
+      id: 4,
+      name: "Tooth Extraction",
+      description:
+        "Removal of a tooth that is decayed, damaged, or impacted (like wisdom teeth).",
+      appointments: 73,
+      image: toothExtraction,
+    },
+    {
+      id: 5,
+      name: "Dental Consultation",
+      description:
+        "Initial check-up where the dentist examines your teeth, gums, and mouth, often with x-rays if needed.",
+      appointments: 124,
+      image: dentalConsultation,
+    },
+    {
+      id: 6,
+      name: "Tooth Filling",
+      description:
+        "Restores a decayed or damaged tooth using materials like composite resin, amalgam, or porcelain.",
+      appointments: 89,
+      image: toothFilling,
+    },
   ];
 
   const stats = [
-    { label: "Total Services", value: services.length.toString(), icon: Stethoscope },
-    { label: "Active Appointments", value: services.reduce((acc, s) => acc + s.appointments, 0).toString(), icon: Calendar },
+    {
+      label: "Total Services",
+      value: services.length.toString(),
+      icon: Stethoscope,
+    },
+    {
+      label: "Active Appointments",
+      value: services
+        .reduce((acc, s) => acc + s.appointments, 0)
+        .toString(),
+      icon: Calendar,
+    },
   ];
 
   return (
@@ -75,6 +127,7 @@ const Services = (): JSX.Element => {
                 Manage your dental services and appointments
               </p>
             </div>
+            {/* Keeping the Add Service button behavior as-is; no hover changes requested here */}
             <button className="bg-[#30b8de] hover:bg-[#2bacd0] text-white rounded-lg h-[36px] px-5 text-sm font-medium flex items-center gap-2">
               <Plus className="w-4 h-4" />
               Add Service
@@ -100,7 +153,10 @@ const Services = (): JSX.Element => {
                     className="p-3 rounded-lg"
                     style={{ backgroundColor: "rgba(48, 184, 222, 0.3)" }}
                   >
-                    <stat.icon className="w-6 h-6" style={{ color: "#3165DC" }} />
+                    <stat.icon
+                      className="w-6 h-6"
+                      style={{ color: "#3165DC" }}
+                    />
                   </div>
                 </div>
               </div>
@@ -112,13 +168,13 @@ const Services = (): JSX.Element => {
             {services.map((service) => (
               <div
                 key={service.id}
-                className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow group"
+                className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden"
               >
                 <div className="relative h-64 overflow-hidden bg-gray-100">
                   <img
                     src={service.image}
                     alt={service.name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    className="w-full h-full object-cover"
                   />
                 </div>
                 <div className="p-5">
@@ -136,14 +192,16 @@ const Services = (): JSX.Element => {
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
+                      {/* Removed hover and transition classes */}
                       <button
-                        className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                        className="p-2 text-gray-600 rounded-lg"
                         title="Edit"
-                      >
-                      </button>
+                        aria-label="Edit"
+                      />
                       <button
-                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        className="p-2 text-red-600 rounded-lg"
                         title="Delete"
+                        aria-label="Delete"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>

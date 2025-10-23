@@ -278,6 +278,8 @@ export default function ActiveAppointments(): JSX.Element {
       setActionLoading(true);
       await patchStatus(selected.id, "CONFIRMED");
       updateStatusLocal(selected.id, "CONFIRMED");
+      // let the Patients page know a record became "approved"
+      window.dispatchEvent(new Event("patients-updated"));
       setOpen(false);
       setSelected(null);
     } catch (e) {
@@ -313,10 +315,11 @@ export default function ActiveAppointments(): JSX.Element {
       setActionLoading(true);
       await patchStatus(selected.id, "COMPLETED");
       updateStatusLocal(selected.id, "COMPLETED"); // disappears from Active views
+      // notify both history and patients
+      window.dispatchEvent(new Event("appointments-updated"));
+      window.dispatchEvent(new Event("patients-updated"));
       setOpen(false);
       setSelected(null);
-      // notify history + navigate
-      window.dispatchEvent(new Event("appointments-updated"));
       navigate("/appointment-history");
     } catch (e) {
       alert((e as any).message || "Failed to complete");
