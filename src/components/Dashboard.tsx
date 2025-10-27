@@ -3,7 +3,7 @@ import { Bell } from 'lucide-react';
 import Sidebar from './Sidebar';
 
 // SVGs
-import totalPatientIcon from '../assets/total_patient.svg'; // reuse for "Approved" if you like
+import totalPatientIcon from '../assets/total_patient.svg';
 import completedIcon from '../assets/completed.svg';
 import pendingIcon from '../assets/pending.svg';
 import declinedIcon from '../assets/declined.svg';
@@ -16,24 +16,45 @@ type Stats = {
   completed: number;
 };
 
+type DoctorRow = {
+  id: number;
+  full_name: string;
+  position?: string | null;
+  work_time?: string | null;
+  patients_today?: number | null; // ignored; we compute counts from appointments
+  status?: 'At Work' | 'Lunch' | 'Off' | 'Absent' | 'At Leave' | string | null;
+  created_at?: string;
+};
+
+type ApiAppointment = {
+  id: number;
+  patientName: string;
+  doctor: string;
+  date: string;       // YYYY-MM-DD
+  timeStart: string;  // HH:MM
+  service: string;
+  status: 'PENDING' | 'CONFIRMED' | 'DECLINED' | 'COMPLETED';
+};
+
 const Dashboard: React.FC = () => {
+  /* ===================== STATS ===================== */
   const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string>('');
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsErr, setStatsErr] = useState<string>('');
 
   const fetchStats = async () => {
     try {
-      setLoading(true);
-      setErr('');
+      setStatsLoading(true);
+      setStatsErr('');
       const res = await fetch('http://localhost:4000/api/admin/stats', { cache: 'no-store' });
-      const json: Stats = await res.json();
-      if (!res.ok) throw new Error((json as any).error || 'Failed to load stats');
-      setStats(json);
+      const json: Stats | any = await res.json();
+      if (!res.ok) throw new Error(json?.error || 'Failed to load stats');
+      setStats(json as Stats);
     } catch (e: any) {
-      setErr(e?.message || 'Failed to load stats');
+      setStatsErr(e?.message || 'Failed to load stats');
       setStats(null);
     } finally {
-      setLoading(false);
+      setStatsLoading(false);
     }
   };
 
@@ -41,14 +62,13 @@ const Dashboard: React.FC = () => {
     fetchStats();
   }, []);
 
-  // Optional: live refresh when ActiveAppointments updates something
   useEffect(() => {
     const refresh = () => fetchStats();
     window.addEventListener('appointments-updated', refresh);
     return () => window.removeEventListener('appointments-updated', refresh);
   }, []);
 
-  const approved  = stats?.confirmed || 0; // DB "CONFIRMED"
+  const approved  = stats?.confirmed || 0;
   const completed = stats?.completed || 0;
   const pending   = stats?.pending || 0;
   const declined  = stats?.declined || 0;
@@ -66,25 +86,100 @@ const Dashboard: React.FC = () => {
     { name: 'Tooth Filling', percentage: 20, color: 'bg-blue-500' }
   ];
 
-  const doctors = [
-    { name: 'Dr. Juan Dela Cruz', time: '08:00 - 17:00', patients: 3, status: 'At Work' },
-    { name: 'Dr. Juan Dela Cruz', time: '08:00 - 17:00', patients: 2, status: 'Lunch' },
-    { name: 'Dr. Juan Dela Cruz', time: '08:00 - 17:00', patients: 4, status: 'At Work' },
-    { name: 'Dr. Juan Dela Cruz', time: '08:00 - 17:00', patients: 1, status: 'At Work' }
-  ];
+  /* ===================== DOCTORS + ACTIVE COUNTS ===================== */
+  const [doctors, setDoctors] = useState<DoctorRow[]>([]);
+  const [doctorsLoading, setDoctorsLoading] = useState<boolean>(true);
+  const [doctorsErr, setDoctorsErr] = useState<string>('');
 
-  const appointments = [
-    { patient: 'Juan Dela Cruz', time: '10:00AM', date: '10.24.24', treatment: 'Cleaning' },
-    { patient: 'Juan Dela Cruz', time: '8:00 AM',  date: '10.24.24', treatment: 'Consultation' },
-    { patient: 'Juan Dela Cruz', time: '2:00 PM',  date: '10.24.24', treatment: 'Tooth Filling' }
-  ];
+  // Map of normalized doctor name -> active appt count
+  const [activeCounts, setActiveCounts] = useState<Record<string, number>>({});
+  const [countsLoading, setCountsLoading] = useState<boolean>(true);
 
-  const statusClass = (status: string) =>
+  const normalize = (s: string) => (s || '').trim().toLowerCase();
+
+  const fetchDoctors = async () => {
+    try {
+      setDoctorsLoading(true);
+      setDoctorsErr('');
+      const res = await fetch('http://localhost:4000/api/doctors', { cache: 'no-store' });
+      const json: any = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json?.error || 'Failed to load doctors');
+      setDoctors(json.doctors as DoctorRow[]);
+    } catch (e: any) {
+      setDoctorsErr(e?.message || 'Failed to load doctors');
+      setDoctors([]);
+    } finally {
+      setDoctorsLoading(false);
+    }
+  };
+
+  // Get active appointments (PENDING + CONFIRMED) and count by doctor name
+  const fetchActiveCounts = async () => {
+    try {
+      setCountsLoading(true);
+      const u = new URL('http://localhost:4000/api/admin/appointments');
+      u.searchParams.set('page', '1');
+      u.searchParams.set('pageSize', '500');
+      const res = await fetch(u.toString(), { cache: 'no-store' });
+      const json: any = await res.json();
+      if (!res.ok) throw new Error(json?.error || 'Failed to load appointments');
+      const items: ApiAppointment[] = json.items || [];
+      const active = items.filter(a => a.status === 'PENDING' || a.status === 'CONFIRMED');
+
+      const map: Record<string, number> = {};
+      for (const a of active) {
+        const key = normalize(a.doctor);
+        if (!key) continue;
+        map[key] = (map[key] ?? 0) + 1;
+      }
+      setActiveCounts(map);
+    } catch (e) {
+      // keep last counts on error
+    } finally {
+      setCountsLoading(false);
+    }
+  };
+
+  const loadDoctorsAndCounts = async () => {
+    await Promise.all([fetchDoctors(), fetchActiveCounts()]);
+  };
+
+  useEffect(() => {
+    loadDoctorsAndCounts();
+  }, []);
+
+  // Refresh when appointments or doctors change elsewhere (profile/status or approvals)
+  useEffect(() => {
+    const refresh = () => loadDoctorsAndCounts();
+    window.addEventListener('appointments-updated', refresh);
+    window.addEventListener('doctors-updated', refresh);
+    window.addEventListener('focus', refresh); // refresh when coming back to the tab
+    return () => {
+      window.removeEventListener('appointments-updated', refresh);
+      window.removeEventListener('doctors-updated', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, []);
+
+  const statusClass = (status?: string | null) =>
     status === 'At Work'
       ? 'text-green-600'
       : status === 'Lunch'
       ? 'text-orange-500'
+      : status === 'At Leave'
+      ? 'text-blue-600'
+      : status === 'Absent'
+      ? 'text-gray-600'
       : 'text-gray-500';
+
+  // Only show "At Work"
+  const doctorsAtWork = doctors.filter((d) => (d.status || '') === 'At Work');
+
+  const appointmentsSamples = [
+    { patient: 'Juan Dela Cruz', time: '10:00AM', date: '10.24.24', treatment: 'Cleaning' },
+    { patient: 'Juan Dela Cruz', time: '8:00 AM',  date: '10.24.24', treatment: 'Consultation' },
+    { patient: 'Juan Dela Cruz', time: '2:00 PM',  date: '10.24.24', treatment: 'Tooth Filling' }
+  ];
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
@@ -102,8 +197,8 @@ const Dashboard: React.FC = () => {
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           {/* Status / error */}
-          {loading && <p className="text-sm text-gray-500 mb-3">Loading stats…</p>}
-          {!!err && <p className="text-sm text-red-600 mb-3">Error: {err}</p>}
+          {statsLoading && <p className="text-sm text-gray-500 mb-3">Loading stats…</p>}
+          {!!statsErr && <p className="text-sm text-red-600 mb-3">Error: {statsErr}</p>}
 
           {/* Stats cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
@@ -145,32 +240,50 @@ const Dashboard: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Doctors at work */}
             <div className="bg-white px-6 pt-6 pb-2 rounded-xl border border-gray-200 shadow-sm">
-              <h3 className="text-lg font-semibold text-gray-800 mb-4">Doctors at work</h3>
-
-              <div className="divide-y divide-gray-200">
-                {doctors.map((doctor, idx) => (
-                  <div key={idx} className="grid grid-cols-3 items-center py-3">
-                    <div>
-                      <p className="font-medium text-gray-900 leading-6">{doctor.name}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">{doctor.time}</p>
-                    </div>
-
-                    <div className="text-center">
-                      <p className="text-sm font-medium text-gray-900">{doctor.patients} patients</p>
-                    </div>
-
-                    {/* Status */}
-                    <div className="text-left">
-                      <p className={`text-sm font-medium ${statusClass(doctor.status)}`}>
-                        {doctor.status}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-800">Doctors at work</h3>
+                {(doctorsLoading || countsLoading) && (
+                  <span className="text-xs text-gray-500">Refreshing…</span>
+                )}
               </div>
+
+              {!!doctorsErr && (
+                <p className="text-sm text-red-600 mb-3">Error: {doctorsErr}</p>
+              )}
+
+              {(!doctorsLoading && !countsLoading && doctorsAtWork.length === 0) ? (
+                <p className="text-sm text-gray-500 mb-3">No doctors are currently at work.</p>
+              ) : (
+                <div className="divide-y divide-gray-200">
+                  {doctorsAtWork.map((d) => {
+                    const count = activeCounts[normalize(d.full_name)] ?? 0;
+                    return (
+                      <div key={d.id} className="grid grid-cols-3 items-center py-3">
+                        <div>
+                          <p className="font-medium text-gray-900 leading-6">{d.full_name}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">{d.work_time || '08:00 – 17:00'}</p>
+                        </div>
+
+                        <div className="text-center">
+                          <p className="text-sm font-medium text-gray-900">
+                            {count} patients
+                          </p>
+                        </div>
+
+                        {/* Status */}
+                        <div className="text-left">
+                          <p className={`text-sm font-medium ${statusClass(d.status)}`}>
+                            {d.status || 'At Work'}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
-            {/* Today's Appointments */}
+            {/* Today's Appointments (sample/static) */}
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
               <h3 className="text-lg font-semibold text-gray-800 mb-10">Todays Appointments</h3>
 
@@ -182,7 +295,7 @@ const Dashboard: React.FC = () => {
               </div>
 
               <div className="space-y-3">
-                {appointments.map((a, i) => (
+                {appointmentsSamples.map((a, i) => (
                   <div
                     key={i}
                     className="grid grid-cols-3 items-center gap-4 rounded-xl border border-gray-200 bg-white shadow-sm px-4 py-3"

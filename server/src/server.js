@@ -4,6 +4,7 @@ const cors = require('cors');
 
 const authRoutes = require('./routes/auth');
 const appointmentRoutes = require('./routes/appointments');
+const doctorsRoutes = require('./routes/doctors');
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
@@ -31,7 +32,7 @@ app.use(express.json());
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.get('/api/admin/ping', (_req, res) => res.json({ ok: true }));
 
-// mount routers
+app.use('/api/doctors', doctorsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api', appointmentRoutes);
 
