@@ -29,23 +29,18 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 const authRouter = require("./routes/auth");
 const resetAdminRouter = require("./routes/reset-admin");
 
-// ⬇️ these two are needed by your dashboard & appointments pages
-const appointmentsRouter = require("./routes/appointments");
-const adminRouter = require("./routes/admin");
-const doctorsRouter = require("./routes/doctors");
+// ✅ canonical routers you actually use
+const appointmentsRouter = require("./routes/appointments"); // serves /api/admin/appointments, /api/admin/appointments/:id, /api/appointments/:id/status, /api/admin/stats
+const doctorsRouter = require("./routes/doctors");           // serves /api/doctors/*
 
 app.use("/api/auth", authRouter);
 app.use("/api/reset-admin", resetAdminRouter);
-
-// Mount the appointments router at /api so it serves:
-//   /api/admin/appointments
-//   /api/admin/appointments/:id
-//   /api/appointments/:id/status
 app.use("/api", appointmentsRouter);
-
-// Admin + doctors
-app.use("/api/admin", adminRouter);
 app.use("/api/doctors", doctorsRouter);
+
+// ❌ DO NOT mount the legacy admin router — it conflicts and causes 404s
+// const adminRouter = require("./routes/admin");
+// app.use("/api/admin", adminRouter);
 
 /* ---------- 404 ---------- */
 app.use((req, res) => res.status(404).json({ ok: false, error: "NOT_FOUND" }));

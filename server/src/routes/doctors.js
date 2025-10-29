@@ -64,7 +64,6 @@ async function hasColumn(tableName, columnName) {
 /** Returns the first existing column name from candidates, or null */
 async function firstExistingColumn(tableName, candidates) {
   for (const col of candidates) {
-    // Use backticks in query side, but just check existence here
     if (await hasColumn(tableName, col)) return col;
   }
   return null;
@@ -89,16 +88,13 @@ router.get("/", async (_req, res) => {
   }
 });
 
-/** ========== ACTIVE APPOINTMENT COUNTS (per doctor) ==========
- *  Keep ABOVE any /:id routes
- */
+/** ========== ACTIVE APPOINTMENT COUNTS (per doctor) ========== */
 router.get("/counts/active", async (_req, res) => {
   try {
     const doctorColExists = await hasColumn("appointments", "doctor");
 
     let rows;
     if (doctorColExists) {
-      // Count via dentist_id + text doctor name
       rows = await query(
         `
         SELECT
@@ -125,7 +121,6 @@ router.get("/counts/active", async (_req, res) => {
         `
       );
     } else {
-      // Only count those linked by dentist_id
       rows = await query(
         `
         SELECT
@@ -155,7 +150,7 @@ router.get("/counts/active", async (_req, res) => {
   }
 });
 
-/** ========== GET ONE ========== (numeric :id so /counts doesn't match) */
+/** ========== GET ONE (numeric :id) ========== */
 router.get("/:id(\\d+)", async (req, res) => {
   try {
     const rows = await query(
@@ -175,7 +170,7 @@ router.get("/:id(\\d+)", async (req, res) => {
   }
 });
 
-/** ========== APPOINTMENTS FOR ONE DOCTOR ========== (numeric :id) */
+/** ========== APPOINTMENTS FOR ONE DOCTOR ========== */
 router.get("/:id(\\d+)/appointments", async (req, res) => {
   const id = Number(req.params.id);
   const scope = String(req.query.scope || "active").toLowerCase();
@@ -187,28 +182,34 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
   const statusList = allowed[scope] || allowed.active;
 
   try {
-    // Detect all possibly different schemas
     const doctorColExists = await hasColumn("appointments", "doctor");
 
+    // 🔧 Wider set of candidates, includes your schema:
     const patientCol = await firstExistingColumn("appointments", [
       "patient_name",
+      "full_name",        // <— your table uses this
       "patient",
       "client_name",
       "name",
     ]);
-    const serviceCol = await firstExistingColumn("appointments", [
+
+    // Prefer text column; if missing, we’ll use p.name via LEFT JOIN
+    const serviceTextCol = await firstExistingColumn("appointments", [
       "service",
       "procedure",
       "treatment",
     ]);
+
     const dateCol = await firstExistingColumn("appointments", [
       "date",
       "appointment_date",
       "appt_date",
       "scheduled_date",
       "schedule_date",
+      "preferred_date",   // <— your table uses this
       "created_at",
     ]);
+
     const timeStartCol = await firstExistingColumn("appointments", [
       "time_start",
       "start_time",
@@ -216,16 +217,20 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
       "appointment_time",
       "appt_time",
       "scheduled_time",
+      "preferred_time",   // <— your table uses this
     ]);
+
     const reviewCol = await firstExistingColumn("appointments", [
       "review",
       "feedback",
-      "notes",
+      "notes",            // <— your table uses this
     ]);
 
-    // Build safe SELECT expressions
-    const patientExpr = patientCol ? `a.\`${patientCol}\`` : `''`;
-    const serviceExpr = serviceCol ? `a.\`${serviceCol}\`` : `''`;
+    // SELECT expressions
+    const patientExpr = patientCol ? `a.\`${patientCol}\`` : `a.\`full_name\``;
+
+    // Join to procedures so we can always show a readable service name
+    const serviceExpr = serviceTextCol ? `a.\`${serviceTextCol}\`` : `p.name`;
 
     const dateFmtExpr = dateCol
       ? `DATE_FORMAT(a.\`${dateCol}\`, '%Y-%m-%d')`
@@ -236,13 +241,13 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
 
     const reviewExpr = reviewCol ? `a.\`${reviewCol}\`` : `''`;
 
-    // Optional doctor-name matching WHERE fragment
+    // Optional doctor-name text match
     const doctorMatch = doctorColExists
       ? `
           OR (
-               a.dentist_id IS NULL 
-           AND a.doctor IS NOT NULL 
-           AND a.doctor = (SELECT full_name FROM dentists WHERE id = ? LIMIT 1)
+            a.dentist_id IS NULL
+            AND a.doctor IS NOT NULL
+            AND a.doctor = (SELECT full_name FROM dentists WHERE id = ? LIMIT 1)
           )
         `
       : "";
@@ -254,17 +259,18 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
 
     const rows = await query(
       `
-      SELECT 
+      SELECT
         a.id,
-        ${patientExpr}                             AS patient_name,
-        ${serviceExpr}                             AS service,
-        IFNULL(${dateFmtExpr}, '')                 AS date,
-        IFNULL(${timeFmtExpr}, '')                 AS time_start,
+        ${patientExpr}                         AS patient_name,
+        ${serviceExpr}                         AS service,
+        IFNULL(${dateFmtExpr}, '')             AS date,
+        IFNULL(${timeFmtExpr}, '')             AS time_start,
         a.status,
-        ${reviewExpr}                              AS review
+        ${reviewExpr}                          AS review
       FROM appointments a
-      LEFT JOIN dentists d ON d.id = a.dentist_id
-      WHERE 
+      LEFT JOIN dentists d   ON d.id = a.dentist_id
+      LEFT JOIN procedures p ON p.id = a.procedure_id
+      WHERE
         (
           a.dentist_id = ?
           ${doctorMatch}
