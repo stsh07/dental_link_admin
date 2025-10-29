@@ -1,7 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import DocApptTable from "../popups/DocApptTable";
+
+/** === API base helper (no separate api.ts needed) === */
+function joinUrl(base: string, path: string) {
+  return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+const API_BASE =
+  (import.meta as any).env?.VITE_API_URL?.toString() || "http://localhost:4000";
 
 type Doctor = {
   id: number;
@@ -16,16 +23,7 @@ type Doctor = {
   status?: string | null;
   patients_today?: number | null;
   created_at?: string;
-};
-
-type ApiAppointment = {
-  id: number;
-  patientName: string;
-  doctor: string;
-  date: string;      // YYYY-MM-DD
-  timeStart: string; // HH:MM
-  service: string;
-  status: "PENDING" | "CONFIRMED" | "DECLINED" | "COMPLETED";
+  profile_url?: string | null;
 };
 
 type ActiveRow = {
@@ -33,7 +31,7 @@ type ActiveRow = {
   procedure: string;
   date: string;
   time: string;
-  status: string;
+  status: string; // "Approved"
 };
 
 type HistoryRow = {
@@ -41,31 +39,90 @@ type HistoryRow = {
   procedure: string;
   date: string;
   time: string;
-  review: string; // empty for now
+  review: string;
+};
+
+// unified view of appointments regardless of backend field names
+type NormalizedAppt = {
+  patient: string;
+  procedure: string;
+  date: string;
+  time: string;
+  status: string;
+  review: string;
 };
 
 const fmtDatePretty = (ymd: string) => {
-  const [y, m, d] = ymd.split("-").map(Number);
-  const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
-  return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "2-digit" });
+  if (!ymd) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+    const [y, m, d] = ymd.split("-").map(Number);
+    const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "2-digit" });
+  }
+  return String(ymd);
 };
+
 const to12h = (h24: number, m: number) => {
   const am = h24 < 12;
   const h = h24 % 12 || 12;
   const mm = String(m).padStart(2, "0");
   return `${h}:${mm} ${am ? "AM" : "PM"}`;
 };
+
 const addMinutes = (hhmm: string, mins: number) => {
-  const [h, m] = hhmm.split(":").map(Number);
+  const [h, m] = hhmm.split(":").map((n) => Number(n || 0));
   const total = h * 60 + m + mins;
   const hh = Math.floor((total / 60) % 24);
   const mm = total % 60;
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 };
 
-// Allowed status choices (no "Off")
 const STATUS_OPTIONS = ["At Work", "Lunch", "Absent", "At Leave"] as const;
-type UiStatus = typeof STATUS_OPTIONS[number];
+
+function buildPhotoUrl(raw?: string | null) {
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return `${raw}?t=${Date.now()}`;
+  const filename = raw.split(/[/\\]/).pop() || "";
+  if (!filename) return null;
+  return joinUrl(API_BASE, `/uploads/doctors/${filename}?t=${Date.now()}`);
+}
+
+function pickFirst<T = any>(obj: any, names: string[], fallback: T): T {
+  for (const n of names) {
+    const v = obj?.[n];
+    if (v !== undefined && v !== null && String(v).trim() !== "") return v as T;
+  }
+  return fallback;
+}
+
+function normalizeAppt(a: any): NormalizedAppt {
+  const patient = pickFirst<string>(a, ["patient_name", "patientName", "patient"], "");
+  const procedure = pickFirst<string>(a, ["service", "procedure"], "");
+  const dateRaw = pickFirst<string>(a, ["date", "appointment_date", "preferredDate"], "");
+  const timeRaw = pickFirst<string>(a, ["time_start", "timeStart", "preferredTime", "time"], "");
+  const status = String(pickFirst<string>(a, ["status"], "")).toUpperCase();
+
+  let time = "";
+  if (/^\d{1,2}:\d{2}$/.test(String(timeRaw))) {
+    const [sh, sm] = String(timeRaw).split(":").map((n) => Number(n || 0));
+    const start12 = to12h(sh, sm);
+    const endHM = addMinutes(`${String(sh).padStart(2, "0")}:${String(sm).padStart(2, "0")}`, 120);
+    const [eh, em] = endHM.split(":").map((n) => Number(n || 0));
+    const end12 = to12h(eh, em);
+    time = `${start12} – ${end12}`;
+  } else {
+    time = String(timeRaw || "");
+  }
+
+  return {
+    patient,
+    procedure,
+    date: fmtDatePretty(String(dateRaw || "")),
+    time,
+    status,
+    review: String(pickFirst<string>(a, ["review"], "")),
+  };
+}
 
 export default function DoctorProfile() {
   const { id } = useParams<{ id: string }>();
@@ -75,19 +132,15 @@ export default function DoctorProfile() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // Tabs
   const [tab, setTab] = useState<"active" | "history">("active");
 
-  // Table rows
   const [activeRows, setActiveRows] = useState<ActiveRow[]>([]);
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
 
-  // Status dropdown saving state
   const [statusSaving, setStatusSaving] = useState(false);
 
   useEffect(() => {
     let mounted = true;
-
     (async () => {
       if (!id) {
         setErr("Missing doctor id.");
@@ -98,53 +151,55 @@ export default function DoctorProfile() {
       try {
         setLoading(true);
         setErr(null);
-        // Load doctor
-        const res = await fetch(`http://localhost:4000/api/doctors/${id}`, { cache: "no-store" });
+
+        // doctor
+        const res = await fetch(joinUrl(API_BASE, `/api/doctors/${id}`), { cache: "no-store" });
         const json = await res.json();
         if (!res.ok || !json.ok) throw new Error(json.error || "Load failed");
         if (mounted) setDoctor(json.doctor);
 
-        // Load appointments (filter by this doctor's name)
-        const apptRes = await fetch(
-          `http://localhost:4000/api/admin/appointments?doctor=${encodeURIComponent(
-            json.doctor.full_name
-          )}&page=1&pageSize=200`,
-          { cache: "no-store" }
-        );
-        const apptJson = await apptRes.json();
-        if (!apptRes.ok) throw new Error(apptJson?.error || "Load appointments failed");
+        // appointments (active + history)
+        const [respA, respH] = await Promise.all([
+          fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=active`), {
+            cache: "no-store",
+          }),
+          fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=history`), {
+            cache: "no-store",
+          }),
+        ]);
 
-        const items: ApiAppointment[] = apptJson.items || [];
+        const [jsonA, jsonH] = await Promise.all([respA.json(), respH.json()]);
+        if (!respA.ok || !jsonA.ok) throw new Error(jsonA?.error || "Load appointments failed");
+        if (!respH.ok || !jsonH.ok) throw new Error(jsonH?.error || "Load appointments failed");
 
-        const act: ActiveRow[] = [];
-        const hist: HistoryRow[] = [];
+        const normActive: NormalizedAppt[] = (jsonA.items || []).map((a: any) => normalizeAppt(a));
+        const normHistory: NormalizedAppt[] = (jsonH.items || []).map((a: any) => normalizeAppt(a));
 
-        for (const a of items) {
-          if ((a.doctor || "") !== json.doctor.full_name) continue;
+        // Active tab must show ONLY confirmed (approved) items
+        const activeOnly: ActiveRow[] = normActive
+          .filter((row: NormalizedAppt) => row.status === "CONFIRMED")
+          .map((row: NormalizedAppt) => ({
+            patient: row.patient,
+            procedure: row.procedure,
+            date: row.date,
+            time: row.time,
+            status: "Approved",
+          }));
 
-          const [sh, sm] = a.timeStart.split(":").map(Number);
-          const start12 = to12h(sh, sm);
-          const endHM = addMinutes(a.timeStart, 120);
-          const [eh, em] = endHM.split(":").map(Number);
-          const end12 = to12h(eh, em);
-
-          const rowBase = {
-            patient: a.patientName,
-            procedure: a.service,
-            date: fmtDatePretty(a.date),
-            time: `${start12} – ${end12}`,
-          };
-
-          if (a.status === "PENDING" || a.status === "CONFIRMED") {
-            act.push({ ...rowBase, status: a.status === "CONFIRMED" ? "Approved" : "Pending" });
-          } else if (a.status === "COMPLETED") {
-            hist.push({ ...rowBase, review: "" }); // Review blank for now
-          }
-        }
+        // History: completed and declined
+        const historyOnly: HistoryRow[] = normHistory
+          .filter((row: NormalizedAppt) => row.status === "COMPLETED" || row.status === "DECLINED")
+          .map((row: NormalizedAppt) => ({
+            patient: row.patient,
+            procedure: row.procedure,
+            date: row.date,
+            time: row.time,
+            review: row.review || "",
+          }));
 
         if (mounted) {
-          setActiveRows(act);
-          setHistoryRows(hist);
+          setActiveRows(activeOnly);
+          setHistoryRows(historyOnly);
         }
       } catch (e: any) {
         if (mounted) setErr(e.message || "Load failed");
@@ -158,50 +213,21 @@ export default function DoctorProfile() {
     };
   }, [id]);
 
-  const statusColor =
-    (doctor?.status || "At Work") === "At Work"
-      ? "bg-green-100 text-green-700"
-      : (doctor?.status || "") === "Lunch"
-      ? "bg-orange-100 text-orange-700"
-      : (doctor?.status || "") === "At Leave"
-      ? "bg-blue-100 text-blue-700"
-      : (doctor?.status || "") === "Absent"
-      ? "bg-gray-200 text-gray-700"
-      : "bg-gray-100 text-gray-600";
-
-  const updateStatus = async (newStatus: UiStatus) => {
-    if (!doctor) return;
-    try {
-      setStatusSaving(true);
-      const res = await fetch(`http://localhost:4000/api/doctors/${doctor.id}/status`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: newStatus }),
-      });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || "Update failed");
-      setDoctor((d) => (d ? { ...d, status: newStatus } : d));
-      // let other pages refresh on focus (Doctors, Dashboard)
-      window.dispatchEvent(new Event("appointments-updated"));
-    } catch (e: any) {
-      alert(e.message || "Failed to update status");
-    } finally {
-      setStatusSaving(false);
-    }
-  };
-
   const deleteDoctor = async () => {
     if (!doctor) return;
     if (!confirm("Delete this doctor? This will remove them from the doctors list.")) return;
     try {
-      const res = await fetch(`http://localhost:4000/api/doctors/${doctor.id}`, { method: "DELETE" });
+      const res = await fetch(joinUrl(API_BASE, `/api/doctors/${doctor.id}`), { method: "DELETE" });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.ok) throw new Error(j.error || "Delete failed");
+      window.dispatchEvent(new Event("doctors-updated"));
       navigate("/doctors");
     } catch (e: any) {
       alert(e.message || "Failed to delete");
     }
   };
+
+  const photo = useMemo(() => buildPhotoUrl(doctor?.profile_url), [doctor?.profile_url]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
@@ -236,13 +262,24 @@ export default function DoctorProfile() {
                 {/* Profile row */}
                 <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 mb-8 sm:mb-10">
                   <div className="flex justify-center lg:justify-start">
-                    <div className="w-40 h-40 sm:w-48 sm:h-48 rounded-full bg-gray-200 flex items-center justify-center text-3xl font-bold text-gray-600">
-                      {doctor.full_name
-                        .split(" ")
-                        .map((n) => n[0])
-                        .join("")
-                        .slice(0, 2)
-                        .toUpperCase()}
+                    <div className="w-40 h-40 sm:w-48 sm:h-48 rounded-full bg-gray-200 flex items-center justify-center text-3xl font-bold text-gray-600 overflow-hidden border border-gray-300">
+                      {photo ? (
+                        <img
+                          src={photo}
+                          alt={doctor.full_name}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            (e.currentTarget as HTMLImageElement).style.display = "none";
+                          }}
+                        />
+                      ) : (
+                        doctor.full_name
+                          .split(" ")
+                          .map((n) => n[0])
+                          .join("")
+                          .slice(0, 2)
+                          .toUpperCase()
+                      )}
                     </div>
                   </div>
 
@@ -304,15 +341,25 @@ export default function DoctorProfile() {
                           {doctor.work_time || "08:00 – 17:00"}
                         </span>
 
-                        {/* Status pill dropdown — width 110px, no "Off" */}
                         <div className="relative">
                           <details className="group inline-block">
                             <summary
-                              className={`list-none cursor-pointer select-none inline-flex items-center justify-between gap-2 px-2 py-1 rounded font-semibold ${statusColor}`}
+                              className={`list-none cursor-pointer select-none inline-flex items-center justify-between gap-2 px-2 py-1 rounded font-semibold ${
+                                (doctor?.status || "At Work") === "At Work"
+                                  ? "bg-green-100 text-green-700"
+                                  : (doctor?.status || "") === "Lunch"
+                                  ? "bg-orange-100 text-orange-700"
+                                  : (doctor?.status || "") === "At Leave"
+                                  ? "bg-blue-100 text-blue-700"
+                                  : (doctor?.status || "") === "Absent"
+                                  ? "bg-gray-200 text-gray-700"
+                                  : "bg-gray-100 text-gray-600"
+                              }`}
                               style={{ width: 110, height: 30 }}
                             >
-                              <span className="truncate">{statusSaving ? "Saving…" : (doctor.status || "At Work")}</span>
-                              {/* caret on the right inside the pill */}
+                              <span className="truncate">
+                                {statusSaving ? "Saving…" : doctor?.status || "At Work"}
+                              </span>
                               <svg className="w-4 h-4 opacity-70" viewBox="0 0 20 20" fill="currentColor">
                                 <path
                                   fillRule="evenodd"
@@ -322,7 +369,6 @@ export default function DoctorProfile() {
                               </svg>
                             </summary>
 
-                            {/* dropdown menu (same width as header) */}
                             <div
                               className="absolute z-20 mt-1 rounded-md border border-gray-200 bg-white shadow-md overflow-hidden"
                               style={{ width: 110 }}
@@ -333,7 +379,27 @@ export default function DoctorProfile() {
                                   onClick={async (e) => {
                                     e.preventDefault();
                                     (e.currentTarget.closest("details") as HTMLDetailsElement)?.removeAttribute("open");
-                                    await updateStatus(opt);
+
+                                    setStatusSaving(true);
+                                    try {
+                                      const res = await fetch(
+                                        joinUrl(API_BASE, `/api/doctors/${doctor!.id}/status`),
+                                        {
+                                          method: "PATCH",
+                                          headers: { "Content-Type": "application/json" },
+                                          body: JSON.stringify({ status: opt }),
+                                        }
+                                      );
+                                      const j = await res.json().catch(() => ({}));
+                                      if (!res.ok || !j.ok) throw new Error(j.error || "Update failed");
+                                      setDoctor((d) => (d ? { ...d, status: opt } : d));
+                                      window.dispatchEvent(new Event("appointments-updated"));
+                                      window.dispatchEvent(new Event("doctors-updated"));
+                                    } catch (error: any) {
+                                      alert(error?.message || "Failed to update status");
+                                    } finally {
+                                      setStatusSaving(false);
+                                    }
                                   }}
                                   className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50"
                                 >

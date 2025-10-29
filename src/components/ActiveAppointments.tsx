@@ -1,3 +1,4 @@
+// client/components/ActiveAppointments.tsx
 import { useEffect, useMemo, useState } from "react";
 import { BellIcon, SearchIcon, ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -17,27 +18,42 @@ type ApiAppointment = {
   status: "PENDING" | "CONFIRMED" | "DECLINED" | "COMPLETED";
 };
 
-type ApiResponse = { page: number; pageSize: number; total: number; items: ApiAppointment[] };
+type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
 
-const to12h = (h24: number, m: number) => {
-  const am = h24 < 12;
-  const h = h24 % 12 || 12;
-  const mm = String(m).padStart(2, "0");
-  return `${h}:${mm} ${am ? "AM" : "PM"}`;
+/* ---------- Time & date helpers ---------- */
+const parseHHMM = (val?: string | null): { h: number; m: number } | null => {
+  if (!val || typeof val !== "string") return null;
+  const m = val.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]); const mm = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mm)) return null;
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return { h, m: mm };
 };
-const addMinutes = (hhmm: string, mins: number) => {
-  const [h, m] = hhmm.split(":").map(Number);
-  const total = h * 60 + m + mins;
-  const hh = Math.floor((total / 60) % 24);
-  const mm = total % 60;
+const to12hSafe = (hhmm?: string | null): string => {
+  const t = parseHHMM(hhmm);
+  if (!t) return "—";
+  const am = t.h < 12;
+  const h = t.h % 12 || 12;
+  return `${h}:${String(t.m).padStart(2, "0")} ${am ? "AM" : "PM"}`;
+};
+const addMinutesSafe = (hhmm: string | null | undefined, mins: number): string | null => {
+  const t = parseHHMM(hhmm);
+  if (!t) return null;
+  const total = t.h * 60 + t.m + mins;
+  const hh = Math.floor(((total % (24 * 60)) + (24 * 60)) % (24 * 60) / 60);
+  const mm = ((total % (24 * 60)) + (24 * 60)) % (24 * 60) % 60;
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 };
-const fmtDatePretty = (ymd: string) => {
+const fmtDatePretty = (ymd?: string | null) => {
+  if (!ymd) return "—";
   const [y, m, d] = ymd.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  if (!y || !m || !d) return "—";
+  const dt = new Date(Date.UTC(y, m - 1, d));
   return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "2-digit" });
 };
 
+/* ---------- UI helpers ---------- */
 const uiStatus = (s: ApiAppointment["status"]) =>
   s === "CONFIRMED" ? "Approved" :
   s === "PENDING"  ? "Pending"  :
@@ -45,136 +61,54 @@ const uiStatus = (s: ApiAppointment["status"]) =>
                      "Declined";
 
 const badgeClasses = (s: ApiAppointment["status"]) =>
-  s === "CONFIRMED" ? "bg-[#CFF7DA] text-[#2BAE66]" : // green
-  s === "PENDING"  ? "bg-[#FFF2CC] text-[#F2B705]" :  // yellow
-  s === "COMPLETED"? "bg-blue-100 text-blue-600" :    // blue
-                     "bg-red-100 text-red-700";       // declined = red
+  s === "CONFIRMED" ? "bg-[#CFF7DA] text-[#2BAE66]" :
+  s === "PENDING"  ? "bg-[#FFF2CC] text-[#F2B705]"  :
+  s === "COMPLETED"? "bg-blue-100 text-blue-600"    :
+                     "bg-red-100 text-red-700";
 
 const isActive = (s: ApiAppointment["status"]) => s === "PENDING" || s === "CONFIRMED";
 
-/* ===================== DETAIL EXTRACTOR HELPERS ===================== */
-const isBlank = (v: any) => v == null || (typeof v === "string" && v.trim() === "");
+/* ---------- Robust normalizer ---------- */
+const normalizeItem = (raw: any): ApiAppointment => {
+  const id = Number(raw.id ?? 0);
 
-const scan = (
-  obj: any,
-  pred: (key: string, val: any, path: string[]) => boolean,
-  path: string[] = []
-): { path: string[]; value: any } | null => {
-  if (!obj || typeof obj !== "object") return null;
-  if (Array.isArray(obj)) {
-    for (let i = 0; i < obj.length; i++) {
-      const child = obj[i];
-      const got = scan(child, pred, [...path, String(i)]);
-      if (got) return got;
-    }
-    return null;
-  }
-  for (const [k, v] of Object.entries(obj)) {
-    if (pred(k, v, path)) return { path: [...path, k], value: v };
-    const got = scan(v, pred, [...path, k]);
-    if (got) return got;
-  }
-  return null;
-};
+  const patientName = String(
+    raw.patientName ??
+    raw.full_name ??
+    raw.name ??
+    ""
+  ).trim();
 
-const findTextByKeys = (obj: any, keys: string[]): string | null => {
-  const keySet = new Set(keys.map(k => k.toLowerCase()));
-  const res = scan(obj, (k, v) => keySet.has(k.toLowerCase()) && !isBlank(v));
-  return res ? String(res.value).trim() : null;
-};
-const findNumberByKeys = (obj: any, keys: string[]): number | null => {
-  const keySet = new Set(keys.map(k => k.toLowerCase()));
-  const res = scan(obj, (k, v) => keySet.has(k.toLowerCase()) && Number.isFinite(Number(v)));
-  if (!res) return null;
-  const n = Number(res.value);
-  return Number.isFinite(n) ? n : null;
-};
-const ageFromDob = (dobStr: string | null): number | null => {
-  if (!dobStr) return null;
-  const d = new Date(dobStr);
-  if (Number.isNaN(d.getTime())) return null;
-  const now = new Date();
-  let age = now.getFullYear() - d.getFullYear();
-  const m = now.getMonth() - d.getMonth();
-  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
-  return age > 0 ? age : null;
-};
-const findEmailByPattern = (obj: any): string | null => {
-  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
-  const res = scan(obj, (_k, v) => typeof v === "string" && emailRe.test(v.trim()));
-  return res ? res.value.trim() : null;
-};
-const findPhoneByPattern = (obj: any): string | null => {
-  const res = scan(obj, (_k, v) => {
-    if (typeof v !== "string" && typeof v !== "number") return false;
-    const s = String(v);
-    const digits = s.replace(/\D/g, "");
-    return digits.length >= 7;
-  });
-  return res ? String(res.value).trim() : null;
-};
-const findGenderByPattern = (obj: any): string | null => {
-  const res = scan(obj, (_k, v) => {
-    if (isBlank(v)) return false;
-    const s = String(v).trim().toLowerCase();
-    return ["male", "female", "m", "f", "other", "non-binary"].includes(s);
-  });
-  return res ? String(res.value).trim() : null;
-};
+  const doctor = String(
+    raw.doctor ??
+    raw.doctorName ??
+    raw.dentist ??
+    ""
+  ).trim();
 
-const toAddressString = (val: any): string | null => {
-  if (typeof val === "string" && !isBlank(val)) return val.trim();
-  if (val && typeof val === "object") {
-    const parts = [
-      val.line1 ?? val.street ?? val.street1 ?? val.addressLine1,
-      val.line2 ?? val.barangay ?? val.addressLine2,
-      val.city ?? val.municipality,
-      val.province ?? val.state,
-      val.zip ?? val.postalCode,
-    ];
-    const s = parts.filter(p => !isBlank(p)).map(String).join(", ");
-    return s || null;
-  }
-  return null;
-};
-const findAddress = (obj: any): string | null => {
-  const k = scan(obj, (key, v) => /address/i.test(key) && !isBlank(v));
-  const chosen = k ? toAddressString(k.value) : null;
-  if (chosen) return chosen;
-  const line1 = findTextByKeys(obj, ["line1", "street", "addressLine1"]);
-  const line2 = findTextByKeys(obj, ["line2", "barangay", "addressLine2"]);
-  const city  = findTextByKeys(obj, ["city", "municipality"]);
-  const prov  = findTextByKeys(obj, ["province", "state"]);
-  const zip   = findTextByKeys(obj, ["zip", "postalCode"]);
-  const s = [line1, line2, city, prov, zip].filter(x => !isBlank(x)).join(", ");
-  return s || null;
-};
+  const date = String(
+    raw.date ??
+    raw.preferredDate ??
+    ""
+  ).slice(0, 10);
 
-const extractDetail = (raw: any): Partial<AppointmentDetail> => {
-  const roots = [raw, raw?.data, raw?.appointment, raw?.result, raw?.payload].filter(Boolean);
-  let email  = null as string | null;
-  let phone  = null as string | null;
-  let gender = null as string | null;
-  let age    = null as number | null;
-  let address= null as string | null;
-  let notes  = null as string | null;
+  const timeStart = String(
+    raw.timeStart ??
+    raw.preferredTime ??
+    ""
+  ).slice(0, 5);
 
-  for (const r of roots) {
-    email  ||= findTextByKeys(r, ["email", "patientEmail", "userEmail", "contactEmail"]) || findEmailByPattern(r);
-    phone  ||= findTextByKeys(r, ["phone", "phoneNumber", "contactNumber", "mobile", "contactNo", "tel", "telephone"]) || findPhoneByPattern(r);
-    gender ||= findTextByKeys(r, ["gender", "sex"]) || findGenderByPattern(r);
-    notes  ||= findTextByKeys(r, ["notes", "note", "remarks"]);
-    age    ||= findNumberByKeys(r, ["age", "patientAge"]);
-    if (!age) {
-      const dob = findTextByKeys(r, ["dob", "dateOfBirth", "birthDate", "birthday"]);
-      age = ageFromDob(dob || null);
-    }
-    address ||= findAddress(r);
-  }
+  const service = String(
+    raw.service ??
+    raw.serviceName ??
+    raw.procedureName ??
+    raw.procedure ??
+    ""
+  ).trim();
 
-  return { email, phone, gender, notes, age, address };
+  const status = (String(raw.status ?? "PENDING").toUpperCase() as ApiAppointment["status"]);
+  return { id, patientName, doctor, date, timeStart, service, status };
 };
-/* =================================================================== */
 
 export default function ActiveAppointments(): JSX.Element {
   const navigate = useNavigate();
@@ -189,20 +123,25 @@ export default function ActiveAppointments(): JSX.Element {
   const [selected, setSelected] = useState<AppointmentDetail | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // Load active appointments (server returns all; we filter by tab)
   useEffect(() => {
     const run = async () => {
       try {
         setLoading(true);
         setError("");
         const u = new URL("http://localhost:4000/api/admin/appointments");
-        if (query.trim()) u.searchParams.set("search", query.trim());
         u.searchParams.set("page", "1");
-        u.searchParams.set("pageSize", "100");
+        u.searchParams.set("pageSize", "500");
+        if (query.trim()) u.searchParams.set("search", query.trim());
+
         const res = await fetch(u.toString(), { cache: "no-store" });
         const json: ApiResponse = await res.json();
-        if (!res.ok) throw new Error((json as any).error || "load failed");
-        setItems(json.items || []);
+        if (!res.ok || (json as any).error) throw new Error((json as any).error || "load failed");
+
+        if ((json as any)?.items?.length) {
+          console.log("Sample admin item:", (json as any).items[0]); // <— temp debug
+        }
+
+        setItems((json.items || []).map(normalizeItem));
       } catch (e: any) {
         setError(e?.message || "Failed to load");
         setItems([]);
@@ -214,17 +153,30 @@ export default function ActiveAppointments(): JSX.Element {
   }, [query]);
 
   const filtered = useMemo(() => {
-    if (tab === "pending")  return items.filter(a => a.status === "PENDING");
-    if (tab === "approved") return items.filter(a => a.status === "CONFIRMED");
-    return items.filter(a => isActive(a.status)); // All = Pending + Approved
+    const base = items.filter(a => isActive(a.status));
+    if (tab === "pending")  return base.filter(a => a.status === "PENDING");
+    if (tab === "approved") return base.filter(a => a.status === "CONFIRMED");
+    return base;
   }, [items, tab]);
 
-  // fetch details for popup
-  const fetchDetails = async (id: number) => {
+  const fetchDetails = async (id: number): Promise<Partial<AppointmentDetail>> => {
     const res = await fetch(`http://localhost:4000/api/admin/appointments/${id}`, { cache: "no-store" });
-    const raw = await res.json();
-    if (!res.ok) throw new Error(raw?.error || "load details failed");
-    return extractDetail(raw) as Partial<AppointmentDetail>;
+    if (!res.ok) return {};
+    const j = await res.json();
+    return {
+      patientName: j.patientName ?? j.full_name ?? "",
+      email: j.email ?? null,
+      age: j.age ?? null,
+      gender: j.gender ?? null,
+      phone: j.phone ?? null,
+      address: j.address ?? null,
+      notes: j.notes ?? null,
+      doctor: j.doctor ?? j.doctorName ?? "",
+      date: String(j.date ?? j.preferredDate ?? "").slice(0, 10),
+      timeStart: String(j.timeStart ?? j.preferredTime ?? "").slice(0, 5),
+      service: j.service ?? j.serviceName ?? j.procedureName ?? "",
+      status: (String(j.status ?? "PENDING").toUpperCase() as ApiAppointment["status"]),
+    };
   };
 
   const openPopup = async (a: ApiAppointment) => {
@@ -248,12 +200,9 @@ export default function ActiveAppointments(): JSX.Element {
     try {
       const detail = await fetchDetails(a.id);
       setSelected(prev => prev ? { ...prev, ...detail } as AppointmentDetail : prev);
-    } catch (e) {
-      console.error(e);
-    }
+    } catch { /* ignore */ }
   };
 
-  // local + popup status update
   const updateStatusLocal = (id: number, status: ApiAppointment["status"]) => {
     setItems(prev => prev.map(it => it.id === id ? { ...it, status } : it));
     setSelected(prev => prev ? { ...prev, status } : prev);
@@ -271,14 +220,18 @@ export default function ActiveAppointments(): JSX.Element {
     }
   };
 
-  // Pending -> Approve
+  const bounceToHistory = () => {
+    window.dispatchEvent(new Event("appointments-updated"));
+    window.dispatchEvent(new Event("patients-updated"));
+    navigate("/appointments/history"); // <-- match your App.tsx route
+  };
+
   const handleApprove = async () => {
     if (!selected) return;
     try {
       setActionLoading(true);
       await patchStatus(selected.id, "CONFIRMED");
       updateStatusLocal(selected.id, "CONFIRMED");
-      // let the Patients page know a record became "approved"
       window.dispatchEvent(new Event("patients-updated"));
       setOpen(false);
       setSelected(null);
@@ -289,18 +242,15 @@ export default function ActiveAppointments(): JSX.Element {
     }
   };
 
-  // Pending -> Decline (goes to History)
   const handleDecline = async () => {
     if (!selected) return;
     try {
       setActionLoading(true);
       await patchStatus(selected.id, "DECLINED");
-      updateStatusLocal(selected.id, "DECLINED"); // disappears from Active views
+      updateStatusLocal(selected.id, "DECLINED");
       setOpen(false);
       setSelected(null);
-      // notify history + navigate
-      window.dispatchEvent(new Event("appointments-updated"));
-      navigate("/appointment-history");
+      bounceToHistory();
     } catch (e) {
       alert((e as any).message || "Failed to decline");
     } finally {
@@ -308,19 +258,15 @@ export default function ActiveAppointments(): JSX.Element {
     }
   };
 
-  // Approved -> Completed (goes to History)
   const handleComplete = async () => {
     if (!selected) return;
     try {
       setActionLoading(true);
       await patchStatus(selected.id, "COMPLETED");
-      updateStatusLocal(selected.id, "COMPLETED"); // disappears from Active views
-      // notify both history and patients
-      window.dispatchEvent(new Event("appointments-updated"));
-      window.dispatchEvent(new Event("patients-updated"));
+      updateStatusLocal(selected.id, "COMPLETED");
       setOpen(false);
       setSelected(null);
-      navigate("/appointment-history");
+      bounceToHistory();
     } catch (e) {
       alert((e as any).message || "Failed to complete");
     } finally {
@@ -349,13 +295,12 @@ export default function ActiveAppointments(): JSX.Element {
           </div>
         </header>
 
-        {/* content wrapper is relative so popup stays inside */}
         <div className="relative flex-1 overflow-y-auto px-8 pt-4 pb-8">
           <div className="flex items-end justify-between mb-4">
             <div>
               <h2 className="text-black text-xl font-semibold leading-tight">Active Appointments</h2>
               <p className="text-black/80 text-sm leading-tight">
-                {loading ? "Loading…" : error ? `Error: ${error}` : `You have ${filtered.length} total active appointments.`}
+                {loading ? "Loading…" : error ? `Error: ${error}` : `You have ${items.filter(a => isActive(a.status)).length} total active appointments.`}
               </p>
             </div>
 
@@ -387,7 +332,6 @@ export default function ActiveAppointments(): JSX.Element {
             </div>
           </div>
 
-          {/* table */}
           <div className="rounded-lg border border-[#c4c4c4] bg-white shadow">
             <div className="p-0 overflow-x-hidden">
               <table className="w-full table-fixed border-collapse">
@@ -420,26 +364,24 @@ export default function ActiveAppointments(): JSX.Element {
 
                 <tbody>
                   {filtered.map((a) => {
-                    const [sh, sm] = a.timeStart.split(":").map(Number);
-                    const start12 = to12h(sh, sm);
-                    const endHM = addMinutes(a.timeStart, 120);
-                    const [eh, em] = endHM.split(":").map(Number);
-                    const end12 = to12h(eh, em);
-                    const timeRange = `${start12} – ${end12}`;
+                    const start12 = to12hSafe(a.timeStart);
+                    const endHM = addMinutesSafe(a.timeStart, 120);
+                    const end12 = endHM ? to12hSafe(endHM) : "—";
+                    const timeRange = start12 !== "—" && end12 !== "—" ? `${start12} – ${end12}` : "—";
                     const datePretty = fmtDatePretty(a.date);
 
                     return (
                       <tr key={a.id} className="border-b border-gray-200 hover:bg-gray-50">
                         <td className="py-3 pl-8 font-medium text-gray-900 text-sm">
                           <div className="flex items-center gap-3">
-                            <img src={profile} alt={`${a.patientName} profile`} className="w-9 h-9 rounded-full bg-white object-cover" />
-                            <span className="truncate">{a.patientName}</span>
+                            <img src={profile} alt={`${a.patientName || "Patient"} profile`} className="w-9 h-9 rounded-full bg-white object-cover" />
+                            <span className="truncate">{a.patientName || "—"}</span>
                           </div>
                         </td>
-                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{a.doctor}</td>
+                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{a.doctor || "—"}</td>
                         <td className="py-3 px-4 text-gray-700 text-sm truncate">{datePretty}</td>
                         <td className="py-3 px-4 text-gray-700 text-sm truncate">{timeRange}</td>
-                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{a.service}</td>
+                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{a.service || "—"}</td>
                         <td className="py-3 px-4">
                           <span className={`inline-flex items-center justify-center rounded-full min-w-[70px] px-2.5 py-0.5 text-[10px] font-semibold whitespace-nowrap ${badgeClasses(a.status)}`}>
                             {uiStatus(a.status)}
@@ -472,7 +414,6 @@ export default function ActiveAppointments(): JSX.Element {
             </div>
           </div>
 
-          {/* Popup */}
           <AppointmentPopup
             open={open}
             data={selected}

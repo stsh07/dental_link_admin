@@ -5,38 +5,61 @@ import { useNavigate } from "react-router-dom";
 import Modal from "./modal";
 import AddDoctorPopup from "../popups/addDoctor";
 
+/** === API base helper (no separate api.ts needed) === */
+function joinUrl(base: string, path: string) {
+  return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+const API_BASE =
+  (import.meta as any).env?.VITE_API_URL?.toString() || "http://localhost:4000";
+
 type DoctorRow = {
   id: number;
   full_name: string;
   position?: string | null;
   work_time?: string | null;
-  status?: "At Work" | "Lunch" | "Absent" | "Leave" | string | null;
+  status?: "At Work" | "Lunch" | "Absent" | "Leave" | "At Leave" | string | null;
   created_at?: string;
-};
-
-type ApiAppointment = {
-  id: number;
-  patientName: string;
-  doctor: string;
-  date: string;       // YYYY-MM-DD
-  timeStart: string;  // HH:MM
-  service: string;
-  status: "PENDING" | "CONFIRMED" | "DECLINED" | "COMPLETED";
+  profile_url?: string | null; // for avatar
 };
 
 function statusClass(status?: string | null) {
   if (status === "At Work") return "text-green-600";
   if (status === "Lunch") return "text-orange-500";
   if (status === "Absent") return "text-gray-600";
-  if (status === "Leave") return "text-gray-500";
+  if (status === "At Leave" || status === "Leave") return "text-blue-600";
   return "text-gray-500";
 }
 
-function Avatar({ name }: { name: string }) {
-  const initials = name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase();
+function buildPhotoUrl(raw?: string | null) {
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return `${raw}?t=${Date.now()}`;
+  const filename = raw.split(/[/\\]/).pop() || "";
+  if (!filename) return null;
+  return joinUrl(API_BASE, `/uploads/doctors/${filename}?t=${Date.now()}`);
+}
+
+function Avatar({ name, photo }: { name: string; photo?: string | null }) {
+  const initials = name
+    .split(" ")
+    .map((n) => n[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  const src = buildPhotoUrl(photo);
   return (
-    <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold">
-      {initials}
+    <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold overflow-hidden border border-blue-200">
+      {src ? (
+        <img
+          src={src}
+          alt={name}
+          className="w-full h-full object-cover"
+          onError={(e) => {
+            (e.currentTarget as HTMLImageElement).style.display = "none";
+          }}
+        />
+      ) : (
+        initials
+      )}
     </div>
   );
 }
@@ -48,36 +71,28 @@ const Doctors: React.FC = () => {
   const [err, setErr] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
 
-  // doctorName -> active appt count (PENDING + CONFIRMED)
+  // doctorName -> active appt count (CONFIRMED only)
   const [counts, setCounts] = useState<Record<string, number>>({});
   const navigate = useNavigate();
 
   async function loadDoctors(signal?: AbortSignal) {
-    const res = await fetch("http://localhost:4000/api/doctors", { signal, cache: "no-store" });
+    const res = await fetch(joinUrl(API_BASE, "/api/doctors"), { signal, cache: "no-store" });
     const json = await res.json();
     if (!res.ok || !json.ok) throw new Error(json.error || "Load doctors failed");
     return json.doctors as DoctorRow[];
   }
 
-  async function loadActiveAppointments(signal?: AbortSignal) {
-    // We fetch admin appointments and group them by doctor for counts
-    const u = new URL("http://localhost:4000/api/admin/appointments");
-    u.searchParams.set("page", "1");
-    u.searchParams.set("pageSize", "500");
-    const res = await fetch(u.toString(), { signal, cache: "no-store" });
-    const json = await res.json();
-    if (!res.ok) throw new Error(json?.error || "Load appointments failed");
-    const items: ApiAppointment[] = json.items || [];
-
-    // Only count active ones (PENDING + CONFIRMED)
-    const active = items.filter(a => a.status === "PENDING" || a.status === "CONFIRMED");
-    const map: Record<string, number> = {};
-    for (const a of active) {
-      const key = (a.doctor || "").trim();
-      if (!key) continue;
-      map[key] = (map[key] ?? 0) + 1;
+  async function loadActiveCounts(signal?: AbortSignal) {
+    // If your backend has /api/doctors/counts/active keep this,
+    // otherwise we’ll fallback to zero counts on failure.
+    const url = joinUrl(API_BASE, "/api/doctors/counts/active");
+    const res = await fetch(url, { signal, cache: "no-store" });
+    if (!res.ok) {
+      return {}; // graceful fallback if route not present
     }
-    return map;
+    const json = await res.json();
+    // Expecting: { ok: true, counts: { "Krystal Cruz": 2, ... } }
+    return (json.counts || {}) as Record<string, number>;
   }
 
   async function loadAll() {
@@ -87,12 +102,12 @@ const Doctors: React.FC = () => {
       const ctrl = new AbortController();
       const [d, c] = await Promise.all([
         loadDoctors(ctrl.signal),
-        loadActiveAppointments(ctrl.signal),
+        loadActiveCounts(ctrl.signal).catch(() => ({})),
       ]);
       setRows(d);
       setCounts(c);
     } catch (e: any) {
-      setErr(e?.message || "Load failed");
+      setErr(e?.message || "DB_ERROR");
       setRows([]);
       setCounts({});
     } finally {
@@ -179,7 +194,7 @@ const Doctors: React.FC = () => {
                   className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm text-left hover:shadow-md hover:border-gray-300 transition focus:outline-none focus:ring-2 focus:ring-cyan-500"
                 >
                   <div className="flex items-center gap-4">
-                    <Avatar name={doc.full_name} />
+                    <Avatar name={doc.full_name} photo={doc.profile_url} />
                     <div className="min-w-0">
                       <p className="font-semibold text-gray-900 truncate">{doc.full_name}</p>
                       <p className="text-sm text-gray-500 truncate">{doc.position || "—"}</p>

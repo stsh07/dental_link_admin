@@ -3,7 +3,33 @@ const express = require("express");
 const router = express.Router();
 const { pool, query } = require("../db");
 
-/** Normalizes a dentist row for the front-end */
+// ---------- Multer (file uploads) ----------
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const dir = path.join(__dirname, "..", "..", "uploads", "doctors");
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const name = Date.now() + "-" + Math.round(Math.random() * 1e9) + ext;
+    cb(null, name);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    if (!file.mimetype.startsWith("image/")) return cb(new Error("ONLY_IMAGE"));
+    cb(null, true);
+  },
+});
+
+// ---------- Helpers ----------
 function mapDentist(row) {
   return {
     id: row.id,
@@ -17,16 +43,41 @@ function mapDentist(row) {
     work_time: row.work_time || "08:00 – 17:00",
     status: row.status || "At Work",
     patients_today: row.patients_today != null ? Number(row.patients_today) : 0,
+    profile_url: row.profile_url ?? null,
     created_at: row.created_at,
   };
 }
+
+/** Check if a column exists in the current DB */
+async function hasColumn(tableName, columnName) {
+  const sql = `
+    SELECT COUNT(*) AS cnt
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = ?
+      AND COLUMN_NAME = ?
+  `;
+  const rows = await query(sql, [tableName, columnName]);
+  return (rows[0]?.cnt || 0) > 0;
+}
+
+/** Returns the first existing column name from candidates, or null */
+async function firstExistingColumn(tableName, candidates) {
+  for (const col of candidates) {
+    // Use backticks in query side, but just check existence here
+    if (await hasColumn(tableName, col)) return col;
+  }
+  return null;
+}
+
+// ---------- Routes ----------
 
 /** ========== LIST (active only) ========== */
 router.get("/", async (_req, res) => {
   try {
     const rows = await query(
       `SELECT id, full_name, email, age, gender, address, phone,
-              position, work_time, status, patients_today, created_at
+              position, work_time, status, patients_today, profile_url, created_at
          FROM dentists
         WHERE is_active = 1
         ORDER BY created_at DESC`
@@ -38,12 +89,78 @@ router.get("/", async (_req, res) => {
   }
 });
 
-/** ========== GET ONE ========== */
-router.get("/:id", async (req, res) => {
+/** ========== ACTIVE APPOINTMENT COUNTS (per doctor) ==========
+ *  Keep ABOVE any /:id routes
+ */
+router.get("/counts/active", async (_req, res) => {
+  try {
+    const doctorColExists = await hasColumn("appointments", "doctor");
+
+    let rows;
+    if (doctorColExists) {
+      // Count via dentist_id + text doctor name
+      rows = await query(
+        `
+        SELECT
+          d.full_name,
+          COALESCE(cnt_id.cnt, 0) + COALESCE(cnt_name.cnt, 0) AS count
+        FROM dentists d
+        LEFT JOIN (
+          SELECT a.dentist_id, COUNT(*) AS cnt
+          FROM appointments a
+          WHERE a.status IN ('PENDING','CONFIRMED')
+            AND a.dentist_id IS NOT NULL
+          GROUP BY a.dentist_id
+        ) cnt_id ON cnt_id.dentist_id = d.id
+        LEFT JOIN (
+          SELECT a.doctor, COUNT(*) AS cnt
+          FROM appointments a
+          WHERE a.status IN ('PENDING','CONFIRMED')
+            AND a.dentist_id IS NULL
+            AND a.doctor IS NOT NULL
+          GROUP BY a.doctor
+        ) cnt_name ON cnt_name.doctor = d.full_name
+        WHERE d.is_active = 1
+        ORDER BY d.full_name ASC
+        `
+      );
+    } else {
+      // Only count those linked by dentist_id
+      rows = await query(
+        `
+        SELECT
+          d.full_name,
+          COALESCE(cnt_id.cnt, 0) AS count
+        FROM dentists d
+        LEFT JOIN (
+          SELECT a.dentist_id, COUNT(*) AS cnt
+          FROM appointments a
+          WHERE a.status IN ('PENDING','CONFIRMED')
+            AND a.dentist_id IS NOT NULL
+          GROUP BY a.dentist_id
+        ) cnt_id ON cnt_id.dentist_id = d.id
+        WHERE d.is_active = 1
+        ORDER BY d.full_name ASC
+        `
+      );
+    }
+
+    const counts = {};
+    for (const r of rows) counts[r.full_name] = Number(r.count) || 0;
+
+    res.json({ ok: true, counts });
+  } catch (e) {
+    console.error("[doctors:counts:active]", e);
+    res.status(500).json({ ok: false, error: "DB_ERROR" });
+  }
+});
+
+/** ========== GET ONE ========== (numeric :id so /counts doesn't match) */
+router.get("/:id(\\d+)", async (req, res) => {
   try {
     const rows = await query(
       `SELECT id, full_name, email, age, gender, address, phone,
-              position, work_time, status, patients_today, created_at
+              position, work_time, status, patients_today, profile_url, created_at
          FROM dentists
         WHERE id = ? AND is_active = 1
         LIMIT 1`,
@@ -58,7 +175,8 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-router.get("/:id/appointments", async (req, res) => {
+/** ========== APPOINTMENTS FOR ONE DOCTOR ========== (numeric :id) */
+router.get("/:id(\\d+)/appointments", async (req, res) => {
   const id = Number(req.params.id);
   const scope = String(req.query.scope || "active").toLowerCase();
 
@@ -69,31 +187,92 @@ router.get("/:id/appointments", async (req, res) => {
   const statusList = allowed[scope] || allowed.active;
 
   try {
-    const rows = await query(
-      `
-      SELECT 
-        a.id,
-        COALESCE(a.patient_name, a.patient, '')              AS patient_name,
-        COALESCE(a.service, a.procedure, '')                 AS service,
-        DATE_FORMAT(a.date, '%Y-%m-%d')                      AS date,
-        DATE_FORMAT(a.time_start, '%H:%i')                   AS time_start,
-        a.status,
-        a.review
-      FROM appointments a
-      LEFT JOIN dentists d ON d.id = a.dentist_id
-      WHERE 
-        (
-          a.dentist_id = ?
+    // Detect all possibly different schemas
+    const doctorColExists = await hasColumn("appointments", "doctor");
+
+    const patientCol = await firstExistingColumn("appointments", [
+      "patient_name",
+      "patient",
+      "client_name",
+      "name",
+    ]);
+    const serviceCol = await firstExistingColumn("appointments", [
+      "service",
+      "procedure",
+      "treatment",
+    ]);
+    const dateCol = await firstExistingColumn("appointments", [
+      "date",
+      "appointment_date",
+      "appt_date",
+      "scheduled_date",
+      "schedule_date",
+      "created_at",
+    ]);
+    const timeStartCol = await firstExistingColumn("appointments", [
+      "time_start",
+      "start_time",
+      "time",
+      "appointment_time",
+      "appt_time",
+      "scheduled_time",
+    ]);
+    const reviewCol = await firstExistingColumn("appointments", [
+      "review",
+      "feedback",
+      "notes",
+    ]);
+
+    // Build safe SELECT expressions
+    const patientExpr = patientCol ? `a.\`${patientCol}\`` : `''`;
+    const serviceExpr = serviceCol ? `a.\`${serviceCol}\`` : `''`;
+
+    const dateFmtExpr = dateCol
+      ? `DATE_FORMAT(a.\`${dateCol}\`, '%Y-%m-%d')`
+      : `NULL`;
+    const timeFmtExpr = timeStartCol
+      ? `DATE_FORMAT(a.\`${timeStartCol}\`, '%H:%i')`
+      : `NULL`;
+
+    const reviewExpr = reviewCol ? `a.\`${reviewCol}\`` : `''`;
+
+    // Optional doctor-name matching WHERE fragment
+    const doctorMatch = doctorColExists
+      ? `
           OR (
                a.dentist_id IS NULL 
            AND a.doctor IS NOT NULL 
            AND a.doctor = (SELECT full_name FROM dentists WHERE id = ? LIMIT 1)
           )
+        `
+      : "";
+
+    const params = doctorColExists ? [id, id] : [id];
+
+    const orderByDate = dateCol ? `a.\`${dateCol}\`` : `a.id`;
+    const orderByTime = timeStartCol ? `a.\`${timeStartCol}\`` : `a.id`;
+
+    const rows = await query(
+      `
+      SELECT 
+        a.id,
+        ${patientExpr}                             AS patient_name,
+        ${serviceExpr}                             AS service,
+        IFNULL(${dateFmtExpr}, '')                 AS date,
+        IFNULL(${timeFmtExpr}, '')                 AS time_start,
+        a.status,
+        ${reviewExpr}                              AS review
+      FROM appointments a
+      LEFT JOIN dentists d ON d.id = a.dentist_id
+      WHERE 
+        (
+          a.dentist_id = ?
+          ${doctorMatch}
         )
         AND a.status IN ${statusList}
-      ORDER BY a.date DESC, a.time_start DESC, a.id DESC
+      ORDER BY ${orderByDate} DESC, ${orderByTime} DESC, a.id DESC
       `,
-      [id, id]
+      params
     );
 
     res.json({ ok: true, items: rows });
@@ -103,8 +282,8 @@ router.get("/:id/appointments", async (req, res) => {
   }
 });
 
-/** ========== CREATE ========== */
-router.post("/", async (req, res) => {
+/** ========== CREATE (with profile upload) ========== */
+router.post("/", upload.single("profile"), async (req, res) => {
   const {
     firstName,
     lastName,
@@ -123,13 +302,14 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ ok: false, error: "FIRST_LAST_REQUIRED" });
   }
   const full_name = `${firstName} ${lastName}`.trim();
+  const profile_url = req.file ? `/uploads/doctors/${req.file.filename}` : null;
 
   try {
     const [r] = await pool.query(
       `INSERT INTO dentists
         (full_name, first_name, last_name, email, age, gender, address, phone,
-         position, work_time, status, patients_today, is_active, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
+         position, work_time, status, patients_today, profile_url, is_active, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())`,
       [
         full_name,
         firstName || null,
@@ -143,6 +323,7 @@ router.post("/", async (req, res) => {
         work_time || "08:00 – 17:00",
         status || "At Work",
         patients_today ?? 0,
+        profile_url,
       ]
     );
     res.status(201).json({ ok: true, id: r.insertId, message: "Doctor created" });
@@ -153,7 +334,7 @@ router.post("/", async (req, res) => {
 });
 
 /** ========== UPDATE STATUS ========== */
-router.patch("/:id/status", async (req, res) => {
+router.patch("/:id(\\d+)/status", async (req, res) => {
   try {
     const { status } = req.body || {};
     if (!status) return res.status(400).json({ ok: false, error: "STATUS_REQUIRED" });
@@ -167,7 +348,7 @@ router.patch("/:id/status", async (req, res) => {
 });
 
 /** ========== SOFT DELETE ========== */
-router.delete("/:id", async (req, res) => {
+router.delete("/:id(\\d+)", async (req, res) => {
   try {
     await pool.query(`UPDATE dentists SET is_active = 0 WHERE id = ?`, [req.params.id]);
     res.json({ ok: true });

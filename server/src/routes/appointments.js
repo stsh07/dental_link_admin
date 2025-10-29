@@ -1,3 +1,4 @@
+// routes/appointments.js
 const express = require('express'); 
 const router = express.Router();
 const { pool } = require('../db');
@@ -207,13 +208,13 @@ router.patch('/appointments/:id/status', async (req, res) => {
   }
 });
 
-/* ===== ADMIN: joined list for table ===== */
+/* ===== ADMIN: joined list for table (LEFT JOIN + strict aliases) ===== */
 router.get('/admin/appointments', async (req, res) => {
   try {
     const status = (req.query.status || '').toString().toUpperCase();
     const search = (req.query.search || '').toString().trim();
     const page = Math.max(1, parseInt(req.query.page || '1', 10));
-    const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize || '100', 10)));
+    const pageSize = Math.max(1, Math.min(1000, parseInt(req.query.pageSize || '500', 10)));
     const offset = (page - 1) * pageSize;
 
     let where = 'WHERE 1=1';
@@ -228,40 +229,40 @@ router.get('/admin/appointments', async (req, res) => {
     }
 
     const sql = `
-      SELECT a.id,
-             a.full_name      AS patientName,
-             d.full_name      AS doctorName,
-             a.preferred_date AS preferredDate,
-             a.preferred_time AS preferredTime,
-             p.name           AS serviceName,
-             a.status         AS status
+      SELECT
+        a.id,
+        a.full_name      AS patientName,
+        d.full_name      AS doctor,
+        a.preferred_date AS date,
+        a.preferred_time AS timeStart,
+        p.name           AS service,
+        a.status         AS status
       FROM appointments a
-      JOIN dentists d   ON d.id = a.dentist_id
-      JOIN procedures p ON p.id = a.procedure_id
+      LEFT JOIN dentists d   ON d.id = a.dentist_id
+      LEFT JOIN procedures p ON p.id = a.procedure_id
       ${where}
-      ORDER BY a.preferred_date DESC, a.preferred_time ASC
+      ORDER BY a.preferred_date DESC, a.preferred_time ASC, a.id DESC
       LIMIT ? OFFSET ?`;
+
     const countSql = `
       SELECT COUNT(*) AS total
       FROM appointments a
-      JOIN dentists d   ON d.id = a.dentist_id
-      JOIN procedures p ON p.id = a.procedure_id
       ${where}`;
 
     const [rows] = await pool.query(sql, [...params, pageSize, offset]);
     const [[{ total }]] = await pool.query(countSql, params);
 
     const items = rows.map(r => ({
-      id: r.id,
-      patientName: r.patientName,
-      doctor: r.doctorName,
-      date: r.preferredDate,
-      timeStart: r.preferredTime.slice(0,5),
-      service: r.serviceName,
-      status: r.status,
+      id: Number(r.id),
+      patientName: (r.patientName || '').trim(),
+      doctor: (r.doctor || '').trim(),
+      date: (r.date || '').slice(0,10),
+      timeStart: (r.timeStart || '').slice(0,5),
+      service: (r.service || '').trim(),
+      status: String(r.status || 'PENDING').toUpperCase(),
     }));
 
-    res.json({ page, pageSize, total, items });
+    res.json({ page, pageSize, total: Number(total || 0), items });
   } catch (err) {
     console.error('GET /admin/appointments error:', err);
     res.status(500).json({ error: 'SERVER_ERROR' });
@@ -282,14 +283,14 @@ router.get('/admin/appointments/:id', async (req, res) => {
          a.gender          AS gender,
          a.address         AS address,
          a.notes           AS notes,
-         a.preferred_date  AS preferredDate,
-         a.preferred_time  AS preferredTime,
+         a.preferred_date  AS date,
+         a.preferred_time  AS timeStart,
          a.status          AS status,
-         d.full_name       AS doctorName,
-         p.name            AS procedureName
+         d.full_name       AS doctor,
+         p.name            AS service
        FROM appointments a
-       JOIN dentists d   ON d.id = a.dentist_id
-       JOIN procedures p ON p.id = a.procedure_id
+       LEFT JOIN dentists d   ON d.id = a.dentist_id
+       LEFT JOIN procedures p ON p.id = a.procedure_id
        WHERE a.id = ?
        LIMIT 1`,
       [id]
@@ -297,19 +298,19 @@ router.get('/admin/appointments/:id', async (req, res) => {
     if (!row) return res.status(404).json({ error: 'NOT_FOUND' });
 
     res.json({
-      id: row.id,
-      patientName: row.patientName,
+      id: Number(row.id),
+      patientName: row.patientName || '',
       email: row.email || null,
       phone: row.phone || null,
       age: row.age != null ? Number(row.age) : null,
       gender: row.gender || null,
       address: row.address || null,
       notes: row.notes || null,
-      date: row.preferredDate,
-      timeStart: row.preferredTime.slice(0,5),
-      status: row.status,
-      doctor: row.doctorName,
-      service: row.procedureName,
+      date: (row.date || '').slice(0,10),
+      timeStart: (row.timeStart || '').slice(0,5),
+      status: String(row.status || 'PENDING').toUpperCase(),
+      doctor: row.doctor || '',
+      service: row.service || '',
     });
   } catch (err) {
     console.error('GET /admin/appointments/:id error:', err);
@@ -343,7 +344,7 @@ router.get('/admin/stats', async (_req, res) => {
   }
 });
 
-/* ===== ADMIN: patients list (CONFIRMED + COMPLETED) — MariaDB-safe (no ANY_VALUE) ===== */
+/* ===== ADMIN: patients list (CONFIRMED + COMPLETED) ===== */
 router.get('/admin/patients', async (req, res) => {
   try {
     const search = (req.query.search || '').toString().trim();
@@ -351,7 +352,6 @@ router.get('/admin/patients', async (req, res) => {
     const pageSize = Math.max(1, Math.min(100, parseInt(req.query.pageSize || '50', 10)));
     const offset = (page - 1) * pageSize;
 
-    // Build WHERE
     const whereParts = [`a.status IN ('CONFIRMED','COMPLETED')`];
     const params = [];
     if (search) {
@@ -360,7 +360,6 @@ router.get('/admin/patients', async (req, res) => {
     }
     const where = `WHERE ${whereParts.join(' AND ')}`;
 
-    // Count distinct patients (by name+email+phone)
     const countSql = `
       SELECT COUNT(*) AS total
       FROM (
@@ -371,7 +370,6 @@ router.get('/admin/patients', async (req, res) => {
       ) t`;
     const [[{ total }]] = await pool.query(countSql, params);
 
-    // Pick one row per patient; use MAX() for representative values and latest visit date
     const dataSql = `
       SELECT
         MAX(a.id)             AS id,
@@ -398,7 +396,7 @@ router.get('/admin/patients', async (req, res) => {
       lastVisit: r.lastVisit, // YYYY-MM-DD
     }));
 
-    res.json({ page, pageSize, total, items });
+    res.json({ page, pageSize, total: Number(total || 0), items });
   } catch (err) {
     console.error('GET /admin/patients error:', err);
     res.status(500).json({ error: 'SERVER_ERROR' });

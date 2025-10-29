@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import { BellIcon, SearchIcon } from "lucide-react";
+// client/components/AppointmentsHistory.tsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import { BellIcon, SearchIcon, ArrowUpDownIcon } from "lucide-react";
 import Sidebar from "./Sidebar";
 import profile from "../assets/profile.svg";
 
@@ -12,30 +13,61 @@ type Row = {
   service: string;
   status: "COMPLETED" | "DECLINED";
 };
-
 type TabKey = "all" | "completed" | "declined";
 type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
 
-const badgeClass = (s: Row["status"]) =>
-  s === "COMPLETED" ? "bg-blue-100 text-blue-600" : "bg-red-100 text-red-700";
-
-const to12h = (hhmm: string) => {
-  const [h, m] = hhmm.split(":").map(Number);
-  const ampm = h < 12 ? "AM" : "PM";
-  const h12 = (h % 12) || 12;
-  return `${h12}:${String(m).padStart(2,"0")} ${ampm}`;
+/* time helpers */
+const parseHHMM = (val?: string | null): { h: number; m: number } | null => {
+  if (!val || typeof val !== "string") return null;
+  const m = val.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]); const mm = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mm)) return null;
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return { h, m: mm };
 };
-const addMinutes = (hhmm: string, mins: number) => {
-  const [h, m] = hhmm.split(":").map(Number);
-  const total = h * 60 + m + mins;
-  const hh = Math.floor((total / 60) % 24);
-  const mm = total % 60;
+const to12hSafe = (hhmm?: string | null): string => {
+  const t = parseHHMM(hhmm);
+  if (!t) return "—";
+  const am = t.h < 12; const h = t.h % 12 || 12;
+  return `${h}:${String(t.m).padStart(2,"0")} ${am ? "AM" : "PM"}`;
+};
+const addMinutesSafe = (hhmm: string | null | undefined, mins: number): string | null => {
+  const t = parseHHMM(hhmm);
+  if (!t) return null;
+  const total = t.h * 60 + t.m + mins;
+  const hh = Math.floor(((total % (24 * 60)) + (24 * 60)) % (24 * 60) / 60);
+  const mm = ((total % (24 * 60)) + (24 * 60)) % (24 * 60) % 60;
   return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}`;
 };
-const prettyDate = (ymd: string) => {
+const prettyDate = (ymd?: string | null) => {
+  if (!ymd) return "—";
   const [y,m,d] = ymd.split("-").map(Number);
-  const dt = new Date(Date.UTC(y,(m||1)-1,d||1));
+  if (!y || !m || !d) return "—";
+  const dt = new Date(Date.UTC(y,m-1,d));
   return dt.toLocaleDateString(undefined, { year:"numeric", month:"long", day:"2-digit" });
+};
+
+const badgeClass = (s: Row["status"]) =>
+  s === "DECLINED" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-600";
+
+/* robust normalizer */
+const normalizeItem = (raw: any): Row => {
+  const id = Number(raw.id ?? 0);
+  const patientName = String(
+    raw.patientName ?? raw.full_name ?? raw.name ?? ""
+  ).trim();
+  const doctor = String(
+    raw.doctor ?? raw.doctorName ?? raw.dentist ?? ""
+  ).trim();
+  const date = String(raw.date ?? raw.preferredDate ?? "").slice(0, 10);
+  const timeStart = String(raw.timeStart ?? raw.preferredTime ?? "").slice(0, 5);
+  const service = String(
+    raw.service ?? raw.serviceName ?? raw.procedureName ?? raw.procedure ?? ""
+  ).trim();
+  const s = String(raw.status ?? "").toUpperCase();
+  const status: Row["status"] = s === "DECLINED" ? "DECLINED" : "COMPLETED";
+  return { id, patientName, doctor, date, timeStart, service, status };
 };
 
 export default function AppointmentsHistory(): JSX.Element {
@@ -43,11 +75,11 @@ export default function AppointmentsHistory(): JSX.Element {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(false);
+  const [sortAsc, setSortAsc] = useState<boolean>(false);
 
   const abortRef = useRef<AbortController | null>(null);
 
   const load = async () => {
-    // cancel any in-flight fetch before starting a new one
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
@@ -56,44 +88,37 @@ export default function AppointmentsHistory(): JSX.Element {
     try {
       const u = new URL("http://localhost:4000/api/admin/appointments");
       u.searchParams.set("page","1");
-      u.searchParams.set("pageSize","200");
+      u.searchParams.set("pageSize","500");
       if (query.trim()) u.searchParams.set("search", query.trim());
-
-      // Ask server for just what we need when on a specific tab
-      if (tab === "completed") u.searchParams.set("status", "COMPLETED");
-      if (tab === "declined")  u.searchParams.set("status", "DECLINED");
 
       const res = await fetch(u.toString(), { cache: "no-store", signal: ac.signal });
       const json: ApiResponse = await res.json();
 
-      const items = (json.items || []) as Array<{
-        id:number, patientName:string, doctor:string, date:string, timeStart:string, service:string, status:string
-      }>;
+      const all = (json.items || []).map(normalizeItem)
+        .filter(x => x.status === "COMPLETED" || x.status === "DECLINED");
 
-      // If "all" tab, show only completed + declined
-      const onlyHistory = tab === "all"
-        ? items.filter(x => x.status === "COMPLETED" || x.status === "DECLINED")
-        : items;
+      const filtered =
+        tab === "completed"
+          ? all.filter(x => x.status === "COMPLETED")
+          : tab === "declined"
+            ? all.filter(x => x.status === "DECLINED")
+            : all;
 
-      setRows(onlyHistory as Row[]);
+      setRows(filtered);
     } catch (e) {
-      // ignore abort errors; reset list for other errors
       if ((e as any).name !== "AbortError") setRows([]);
     } finally {
       setLoading(false);
     }
   };
 
-  // Initial load + when tab or query changes
   useEffect(() => { load(); }, [tab, query]);
 
-  // Light polling so items move into History shortly after marking
   useEffect(() => {
-    const id = setInterval(load, 5000); // 5s
+    const id = setInterval(load, 5000);
     return () => clearInterval(id);
   }, [tab, query]);
 
-  // Refetch when window regains focus
   useEffect(() => {
     const onVis = () => { if (document.visibilityState === "visible") load(); };
     document.addEventListener("visibilitychange", onVis);
@@ -104,26 +129,29 @@ export default function AppointmentsHistory(): JSX.Element {
     };
   }, [tab, query]);
 
-  // 🔔 NEW: reload immediately when ActiveAppointments broadcasts an update
   useEffect(() => {
     const handler = () => load();
     window.addEventListener("appointments-updated", handler);
     return () => window.removeEventListener("appointments-updated", handler);
   }, [tab, query]);
 
-  // Cleanup: abort any in-flight fetch when unmounting
-  useEffect(() => {
-    return () => abortRef.current?.abort();
-  }, []);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
-  const filtered = rows;
+  const sortedRows = useMemo(() => {
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const aKey = `${a.date} ${a.timeStart}`;
+      const bKey = `${b.date} ${b.timeStart}`;
+      return sortAsc ? aKey.localeCompare(bKey) : bKey.localeCompare(aKey);
+    });
+    return copy;
+  }, [rows, sortAsc]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
 
       <main className="flex-1 min-w-0 flex flex-col">
-        {/* Header */}
         <header className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
           <h1 className="text-black text-[28px] font-semibold">Appointments</h1>
 
@@ -137,21 +165,27 @@ export default function AppointmentsHistory(): JSX.Element {
                 className="border-0 outline-none bg-transparent text-sm text-gray-700 placeholder:text-gray-400 h-auto p-0 w-full"
               />
             </div>
+            <button
+              onClick={() => setSortAsc(s => !s)}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg border text-sm text-gray-700 hover:bg-gray-50"
+              title="Toggle date sort"
+            >
+              <ArrowUpDownIcon className="w-4 h-4" />
+              {sortAsc ? "Oldest first" : "Newest first"}
+            </button>
             <BellIcon className="w-5 h-5 text-gray-600" />
           </div>
         </header>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto px-8 pt-4">
           <div className="flex items-end justify-between mb-4">
             <div>
               <h2 className="text-black text-xl font-semibold leading-tight">Appointments History</h2>
               <p className="text-black/80 text-sm leading-tight">
-                {loading ? "Loading…" : `You have ${filtered.length} past appointments.`}
+                {loading ? "Loading…" : `You have ${rows.length} past appointments.`}
               </p>
             </div>
 
-            {/* Tabs */}
             <div className="flex items-center gap-5">
               <button
                 onClick={() => setTab("all")}
@@ -174,7 +208,6 @@ export default function AppointmentsHistory(): JSX.Element {
             </div>
           </div>
 
-          {/* Table */}
           <div className="rounded-lg border border-[#c4c4c4] bg-white shadow">
             <div className="p-0 overflow-x-hidden">
               <table className="w-full table-fixed border-collapse">
@@ -201,31 +234,33 @@ export default function AppointmentsHistory(): JSX.Element {
                 </thead>
 
                 <tbody>
-                  {filtered.map(row => {
-                    const end = addMinutes(row.timeStart, 120);
-                    const timeRange = `${to12h(row.timeStart)} – ${to12h(end)}`;
+                  {sortedRows.map(row => {
+                    const start = to12hSafe(row.timeStart);
+                    const endHM = addMinutesSafe(row.timeStart, 120);
+                    const end = endHM ? to12hSafe(endHM) : "—";
+                    const timeRange = start !== "—" && end !== "—" ? `${start} – ${end}` : "—";
                     return (
                       <tr key={row.id} className="border-b border-gray-200 hover:bg-gray-50">
                         <td className="py-3 pl-8 font-medium text-gray-900 text-sm truncate">
                           <div className="flex items-center gap-3">
-                            <img src={profile} alt={`${row.patientName} profile`} className="w-9 h-9 rounded-full bg-white object-cover" />
-                            <span className="truncate">{row.patientName}</span>
+                            <img src={profile} alt={`${row.patientName || "Patient"} profile`} className="w-9 h-9 rounded-full bg-white object-cover" />
+                            <span className="truncate">{row.patientName || "—"}</span>
                           </div>
                         </td>
-                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{row.doctor}</td>
+                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{row.doctor || "—"}</td>
                         <td className="py-3 px-4 text-gray-700 text-sm truncate">{prettyDate(row.date)}</td>
                         <td className="py-3 px-4 text-gray-700 text-sm truncate">{timeRange}</td>
-                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{row.service}</td>
+                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{row.service || "—"}</td>
                         <td className="py-3 px-4">
                           <span className={`inline-flex items-center justify-center rounded-full min-w-[70px] px-2.5 py-0.5 text-[10px] font-semibold whitespace-nowrap ${badgeClass(row.status)}`}>
-                            {row.status === "COMPLETED" ? "Completed" : "Declined"}
+                            {row.status === "DECLINED" ? "Declined" : "Completed"}
                           </span>
                         </td>
                       </tr>
                     );
                   })}
 
-                  {filtered.length === 0 && !loading && (
+                  {rows.length === 0 && !loading && (
                     <tr>
                       <td colSpan={6} className="py-6 text-center text-sm text-gray-500">No records.</td>
                     </tr>

@@ -25,26 +25,30 @@ type Props = {
 };
 
 const to12h = (hhmm: string) => {
-  const [h, m] = hhmm.split(":").map(Number);
+  const [hStr, mStr] = (hhmm || "00:00").split(":");
+  const h = Number(hStr) || 0;
+  const m = Number(mStr) || 0;
   const ampm = h < 12 ? "AM" : "PM";
   const h12 = (h % 12) || 12;
   return `${h12}:${String(m).padStart(2,"0")} ${ampm}`;
 };
 const addMinutes = (hhmm: string, mins: number) => {
-  const [h, m] = hhmm.split(":").map(Number);
+  const [hStr, mStr] = (hhmm || "00:00").split(":");
+  const h = Number(hStr) || 0;
+  const m = Number(mStr) || 0;
   const total = h * 60 + m + mins;
   const hh = Math.floor((total / 60) % 24);
   const mm = total % 60;
   return `${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")}`;
 };
 const prettyDate = (ymd: string) => {
-  const [y,m,d] = ymd.split("-").map(Number);
-  const dt = new Date(Date.UTC(y, (m||1)-1, d||1));
+  const [y,m,d] = (ymd || "1970-01-01").split("-").map(Number);
+  const dt = new Date(Date.UTC(y || 1970, (m||1)-1, d||1));
   return dt.toLocaleDateString(undefined, { year:"numeric", month:"long", day:"2-digit" });
 };
 const firstNameOf = (full: string) => (full || "").trim().split(/\s+/)[0] || "-";
 
-/* ===== Fallbacks on render (only used if value truly missing) ===== */
+/* ===== Fallback display helpers ===== */
 const EMDASH = "—";
 const showText = (v: string | null | undefined, em = true) => {
   if (v == null) return em ? EMDASH : "-";
@@ -153,15 +157,13 @@ export default function AppointmentPopup({
             )}
 
             {data.status === "CONFIRMED" && (
-              <>
-                <button
-                  disabled={actionLoading}
-                  onClick={onComplete}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-3 rounded-xl"
-                >
-                  {actionLoading ? "Working..." : "Completed"}
-                </button>
-              </>
+              <button
+                disabled={actionLoading}
+                onClick={onComplete}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-semibold py-3 rounded-xl"
+              >
+                {actionLoading ? "Working..." : "Completed"}
+              </button>
             )}
           </div>
         </main>
