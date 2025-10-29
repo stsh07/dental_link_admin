@@ -86,7 +86,7 @@ export default function AppointmentsHistory(): JSX.Element {
 
     setLoading(true);
     try {
-      const u = new URL("http://localhost:4000/api/admin/appointments");
+      const u = new URL("http://localhost:4002/api/admin/appointments");
       u.searchParams.set("page","1");
       u.searchParams.set("pageSize","500");
       if (query.trim()) u.searchParams.set("search", query.trim());

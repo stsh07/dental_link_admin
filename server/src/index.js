@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
+const { ping, setupGracefulShutdown } = require("./db");
 
 const app = express();
 
@@ -21,56 +22,46 @@ app.use(express.urlencoded({ extended: true }));
 /* ---------- Static uploads ---------- */
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 
-/* ---------- Small helper to safely import routers ---------- */
-function loadRouter(modulePath) {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = require(modulePath);
-    // Prefer named `router`, then default, then the module itself
-    const candidate = mod?.router || mod?.default || mod;
-
-    // A valid Express router/middleware has a `handle` function
-    if (candidate && typeof candidate === "function") return candidate;
-    if (candidate && typeof candidate.handle === "function") return candidate;
-
-    console.warn(`[router] Skipped mounting ${modulePath}: not an Express router export.`);
-    return null;
-  } catch (err) {
-    console.error(`[router] Failed loading ${modulePath}:`, err.message);
-    return null;
-  }
-}
-
-/* ---------- Routes ---------- */
-const authRouter = loadRouter("./routes/auth");
-const doctorsRouter = loadRouter("./routes/doctors");
-const appointmentsRouter = loadRouter("./routes/appointments");
-const adminRouter = loadRouter("./routes/admin");
-const resetAdminRouter = loadRouter("./routes/reset-admin");
-
+/* ---------- Health ---------- */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-if (authRouter) app.use("/api/auth", authRouter);
-if (doctorsRouter) app.use("/api/doctors", doctorsRouter);
-if (appointmentsRouter) app.use("/api/appointments", appointmentsRouter);
-if (adminRouter) app.use("/api/admin", adminRouter);
-if (resetAdminRouter) app.use("/api/reset-admin", resetAdminRouter);
+/* ---------- Routers (mount BEFORE 404) ---------- */
+const authRouter = require("./routes/auth");
+const resetAdminRouter = require("./routes/reset-admin");
+
+// ⬇️ these two are needed by your dashboard & appointments pages
+const appointmentsRouter = require("./routes/appointments");
+const adminRouter = require("./routes/admin");
+const doctorsRouter = require("./routes/doctors");
+
+app.use("/api/auth", authRouter);
+app.use("/api/reset-admin", resetAdminRouter);
+
+// Mount the appointments router at /api so it serves:
+//   /api/admin/appointments
+//   /api/admin/appointments/:id
+//   /api/appointments/:id/status
+app.use("/api", appointmentsRouter);
+
+// Admin + doctors
+app.use("/api/admin", adminRouter);
+app.use("/api/doctors", doctorsRouter);
 
 /* ---------- 404 ---------- */
-app.use((req, res) => {
-  res.status(404).json({ ok: false, error: "NOT_FOUND" });
-});
+app.use((req, res) => res.status(404).json({ ok: false, error: "NOT_FOUND" }));
 
 /* ---------- Error handler ---------- */
-// eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   console.error("[API ERROR]", err);
   res.status(500).json({ ok: false, error: "Internal server error" });
 });
 
 /* ---------- Start ---------- */
-const PORT = Number(process.env.PORT || 4000);
-app.listen(PORT, () => {
+const PORT = Number(process.env.PORT || 4002);
+app.listen(PORT, async () => {
   console.log(`API running at http://localhost:${PORT}`);
   console.log(`CORS origin: ${CORS_ORIGIN}`);
+  try { await ping(); console.log("[db] connection OK"); }
+  catch (e) { console.error("[db] ping failed:", e.message || e); }
+  setupGracefulShutdown();
 });

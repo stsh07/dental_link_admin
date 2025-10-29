@@ -1,38 +1,62 @@
-const mysql = require('mysql2/promise');
-const bcrypt = require('bcrypt');
+// server/src/routes/reset-admin.js
+const express = require('express');
+// Use bcryptjs on Windows to avoid native build issues
+const bcrypt = require('bcryptjs');
+const { pool } = require('../db');
 
-(async () => {
+const router = express.Router();
+
+/**
+ * POST /api/reset-admin
+ * Optional JSON body: { email, password, firstName, lastName }
+ * Falls back to .env SEED_* or safe defaults.
+ */
+router.post('/', async (req, res) => {
+  const email = req.body?.email || process.env.SEED_ADMIN_EMAIL || 'admin@gmail.com';
+  const plain = req.body?.password || process.env.SEED_ADMIN_PASSWORD || 'admin12345';
+  const firstName = req.body?.firstName || 'Admin';
+  const lastName  = req.body?.lastName  || 'DentalLink';
+
   try {
-    // ⬇️ adjust only if your MySQL creds are different
-    const conn = await mysql.createConnection({
-      host: 'localhost',
-      port: 3307,         // your phpMyAdmin shows 3307
-      user: 'root',
-      password: '',       // put your MySQL password if you have one
-      database: 'dental_link'
-    });
+    // Ensure users table exists (id, email unique, passwordHash present)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        firstName VARCHAR(100),
+        lastName VARCHAR(100),
+        email VARCHAR(255) NOT NULL UNIQUE,
+        passwordHash VARCHAR(255) NOT NULL,
+        role ENUM('USER','ADMIN','SECRETARY','DOCTOR') NOT NULL DEFAULT 'USER',
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    `);
 
-    const email = 'admin@gmail.com';
-    const pass  = 'admin12345';
+    const passwordHash = await bcrypt.hash(plain, 10);
 
-    const hash = await bcrypt.hash(pass, 10);
-
-    // ensure the row is ADMIN and has a bcrypt hash
-    await conn.execute(
-      "UPDATE users SET firstName=?, lastName=?, email=?, passwordHash=?, role='ADMIN' WHERE email=? LIMIT 1",
-      ['Admin', 'DentalLink', email, hash, email]
+    // UPSERT admin by email
+    await pool.query(
+      `INSERT INTO users (firstName, lastName, email, passwordHash, role)
+       VALUES (?, ?, ?, ?, 'ADMIN')
+       ON DUPLICATE KEY UPDATE
+         firstName=VALUES(firstName),
+         lastName=VALUES(lastName),
+         passwordHash=VALUES(passwordHash),
+         role='ADMIN'`,
+      [firstName, lastName, email, passwordHash]
     );
 
-    // show a quick sanity check
-    const [rows] = await conn.execute(
-      "SELECT email, role, LEFT(passwordHash,4) AS prefix, LENGTH(passwordHash) AS len FROM users WHERE email=?",
+    const [rows] = await pool.query(
+      `SELECT email, role, LEFT(passwordHash,8) AS hashPrefix, LENGTH(passwordHash) AS hashLen
+       FROM users WHERE email=? LIMIT 1`,
       [email]
     );
-    console.log(rows[0]); 
 
-    await conn.end();
-  } catch (e) {
-    console.error(e);
-    process.exit(1);
+    return res.json({ ok: true, user: rows[0] || null });
+  } catch (err) {
+    console.error('[/api/reset-admin] error:', err);
+    return res.status(500).json({ ok: false, error: String(err.message || err) });
   }
-})();
+});
+
+module.exports = router;

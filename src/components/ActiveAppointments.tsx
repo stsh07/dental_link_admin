@@ -128,7 +128,7 @@ export default function ActiveAppointments(): JSX.Element {
       try {
         setLoading(true);
         setError("");
-        const u = new URL("http://localhost:4000/api/admin/appointments");
+        const u = new URL("http://localhost:4002/api/admin/appointments");
         u.searchParams.set("page", "1");
         u.searchParams.set("pageSize", "500");
         if (query.trim()) u.searchParams.set("search", query.trim());
@@ -160,7 +160,7 @@ export default function ActiveAppointments(): JSX.Element {
   }, [items, tab]);
 
   const fetchDetails = async (id: number): Promise<Partial<AppointmentDetail>> => {
-    const res = await fetch(`http://localhost:4000/api/admin/appointments/${id}`, { cache: "no-store" });
+    const res = await fetch(`http://localhost:4002/api/admin/appointments/${id}`, { cache: "no-store" });
     if (!res.ok) return {};
     const j = await res.json();
     return {
@@ -209,7 +209,7 @@ export default function ActiveAppointments(): JSX.Element {
   };
 
   const patchStatus = async (id: number, status: ApiAppointment["status"]) => {
-    const res = await fetch(`http://localhost:4000/api/appointments/${id}/status`, {
+    const res = await fetch(`http://localhost:4002/api/appointments/${id}/status`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),

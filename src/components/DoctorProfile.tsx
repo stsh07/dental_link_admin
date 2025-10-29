@@ -8,7 +8,7 @@ function joinUrl(base: string, path: string) {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
 const API_BASE =
-  (import.meta as any).env?.VITE_API_URL?.toString() || "http://localhost:4000";
+  (import.meta as any).env?.VITE_API_URL?.toString() || "http://localhost:4002";
 
 type Doctor = {
   id: number;

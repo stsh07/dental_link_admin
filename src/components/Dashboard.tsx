@@ -46,7 +46,7 @@ const Dashboard: React.FC = () => {
     try {
       setStatsLoading(true);
       setStatsErr('');
-      const res = await fetch('http://localhost:4000/api/admin/stats', { cache: 'no-store' });
+      const res = await fetch('http://localhost:4002/api/admin/stats', { cache: 'no-store' });
       const json: Stats | any = await res.json();
       if (!res.ok) throw new Error(json?.error || 'Failed to load stats');
       setStats(json as Stats);
@@ -101,7 +101,7 @@ const Dashboard: React.FC = () => {
     try {
       setDoctorsLoading(true);
       setDoctorsErr('');
-      const res = await fetch('http://localhost:4000/api/doctors', { cache: 'no-store' });
+      const res = await fetch('http://localhost:4002/api/doctors', { cache: 'no-store' });
       const json: any = await res.json();
       if (!res.ok || !json.ok) throw new Error(json?.error || 'Failed to load doctors');
       setDoctors(json.doctors as DoctorRow[]);
@@ -117,7 +117,7 @@ const Dashboard: React.FC = () => {
   const fetchActiveCounts = async () => {
     try {
       setCountsLoading(true);
-      const u = new URL('http://localhost:4000/api/admin/appointments');
+      const u = new URL('http://localhost:4002/api/admin/appointments');
       u.searchParams.set('page', '1');
       u.searchParams.set('pageSize', '500');
       const res = await fetch(u.toString(), { cache: 'no-store' });

@@ -7,7 +7,7 @@ const appointmentRoutes = require('./routes/appointments');
 const doctorsRoutes = require('./routes/doctors');
 
 const app = express();
-const PORT = Number(process.env.PORT || 4000);
+const PORT = Number(process.env.PORT || 4002);
 
 // allow Next (3000) + Vite (5173)
 const allowedOrigins = [

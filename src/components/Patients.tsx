@@ -43,7 +43,7 @@ export default function Patients(): JSX.Element {
     setLoading(true);
     setErr("");
     try {
-      const u = new URL("http://localhost:4000/api/admin/patients");
+      const u = new URL("http://localhost:4002/api/admin/patients");
       u.searchParams.set("page", "1");
       u.searchParams.set("pageSize", "100");
       if (query.trim()) u.searchParams.set("search", query.trim());
