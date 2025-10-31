@@ -1,13 +1,18 @@
 import { useEffect, useState } from "react";
 import Sidebar from "./Sidebar";
-import {
-  BellIcon,
-  FileText,
-  Calendar,
-  Search,
-  Filter,
-} from "lucide-react";
+import { BellIcon, FileText, Calendar, Search, Filter } from "lucide-react";
 import profile from "../assets/profile.svg";
+
+interface ApiReview {
+  id: number;
+  appointmentId: number;
+  dentistId: number;
+  userEmail: string;
+  reviewText: string;
+  createdAt: string;
+  patientName?: string | null;
+  doctorName?: string | null;
+}
 
 interface Review {
   customer_name: string;
@@ -23,39 +28,55 @@ const Reviews = (): JSX.Element => {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedDoctor, setSelectedDoctor] = useState<string>("all");
 
+  // change this if your API is on a different port
+  const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:4002";
+
+  /* --------------------------------------------------
+     1) fetch reviews from backend
+  -------------------------------------------------- */
   useEffect(() => {
-    const mockData: Review[] = [
-      {
-        customer_name: "John Doe",
-        doctor: "Dr. Ismael",
-        review_text: "Dr. Ismael was very friendly and professional. Highly recommend!",
-        review_date: "2025-09-25",
-      },
-      {
-        customer_name: "Jane Smith",
-        doctor: "Dr. Brenda",
-        review_text: "Dr. Brenda explained every step carefully and made me feel at ease.",
-        review_date: "2025-09-27",
-      },
-      {
-        customer_name: "Carlos Perez",
-        doctor: "Dr. Krystal",
-        review_text: "Very kind and skilled. My procedure went smoothly thanks to Dr. Krystal.",
-        review_date: "2025-09-20",
-      },
-      {
-        customer_name: "Mia Gonzales",
-        doctor: "Dr. Miguel",
-        review_text: "Excellent experience! Dr. Miguel is very professional and approachable.",
-        review_date: "2025-09-28",
-      },
-    ];
+    const fetchReviews = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/reviews`, {
+          credentials: "include",
+        });
 
-    setReviews(mockData);
-    setFilteredReviews(mockData);
-    setLoading(false);
-  }, []);
+        if (!res.ok) {
+          console.error("Failed to fetch /api/reviews", res.status);
+          setLoading(false);
+          return;
+        }
 
+        const data = await res.json();
+
+        if (data.ok && Array.isArray(data.reviews)) {
+          // map API shape to UI shape
+          const mapped: Review[] = data.reviews.map((r: ApiReview) => ({
+            customer_name: r.patientName && r.patientName.trim().length > 0 ? r.patientName : r.userEmail,
+            doctor: r.doctorName && r.doctorName.trim().length > 0 ? r.doctorName : `Doctor #${r.dentistId}`,
+            review_text: r.reviewText,
+            review_date: r.createdAt,
+          }));
+
+          setReviews(mapped);
+          setFilteredReviews(mapped);
+        } else {
+          setReviews([]);
+          setFilteredReviews([]);
+        }
+      } catch (err) {
+        console.error("Error fetching reviews:", err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchReviews();
+  }, [API_BASE]);
+
+  /* --------------------------------------------------
+     2) re-filter whenever search/doctor/reviews changes
+  -------------------------------------------------- */
   useEffect(() => {
     filterReviews();
   }, [reviews, searchTerm, selectedDoctor]);
@@ -81,7 +102,12 @@ const Reviews = (): JSX.Element => {
   };
 
   const formatDate = (dateString: string) => {
+    // MySQL DATETIME → JS Date
     const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) {
+      // fallback if it's e.g. "2025-10-31 14:31:26"
+      return dateString;
+    }
     return date.toLocaleDateString("en-US", {
       month: "long",
       day: "numeric",
@@ -94,12 +120,24 @@ const Reviews = (): JSX.Element => {
     { label: "Total Reviews", value: reviews.length.toString(), icon: FileText },
     {
       label: "Latest Review",
-      value: reviews.length > 0 ? formatDate(reviews[0].review_date) : "N/A",
+      // backend already sends DESC, but we also sort here just in case
+      value:
+        reviews.length > 0
+          ? formatDate(
+              [...reviews].sort(
+                (a, b) => new Date(b.review_date).getTime() - new Date(a.review_date).getTime()
+              )[0].review_date
+            )
+          : "N/A",
       icon: Calendar,
     },
   ];
 
-  const doctorList = ["all", "Dr. Ismael", "Dr. Brenda", "Dr. Krystal", "Dr. Miguel"];
+  // dynamic doctor list from data
+  const doctorList = [
+    "all",
+    ...Array.from(new Set(reviews.map((r) => r.doctor).filter(Boolean))),
+  ];
 
   if (loading) {
     return (
@@ -138,9 +176,7 @@ const Reviews = (): JSX.Element => {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-sm text-gray-600 mb-1">{stat.label}</p>
-                      <p className="text-2xl font-bold text-gray-900">
-                        {stat.value}
-                      </p>
+                      <p className="text-2xl font-bold text-gray-900">{stat.value}</p>
                     </div>
 
                     <div
@@ -223,9 +259,7 @@ const Reviews = (): JSX.Element => {
                             <span className="truncate">{r.customer_name}</span>
                           </div>
                         </td>
-                        <td className="py-3 px-4 text-gray-700 text-sm truncate">
-                          {r.doctor}
-                        </td>
+                        <td className="py-3 px-4 text-gray-700 text-sm truncate">{r.doctor}</td>
                         <td className="py-3 px-4 text-gray-700 text-sm truncate">
                           {r.review_text}
                         </td>

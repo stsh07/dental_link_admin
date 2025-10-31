@@ -44,12 +44,23 @@ type HistoryRow = {
 
 // unified view of appointments regardless of backend field names
 type NormalizedAppt = {
+  id: number | null;
+  appointmentId: number | null;
   patient: string;
   procedure: string;
   date: string;
   time: string;
   status: string;
   review: string;
+};
+
+type DentistReview = {
+  id: number;
+  appointmentId: number;
+  reviewText: string;
+  createdAt: string;
+  patientName?: string | null;
+  userEmail?: string | null;
 };
 
 const fmtDatePretty = (ymd: string) => {
@@ -96,11 +107,15 @@ function pickFirst<T = any>(obj: any, names: string[], fallback: T): T {
 }
 
 function normalizeAppt(a: any): NormalizedAppt {
-  const patient = pickFirst<string>(a, ["patient_name", "patientName", "patient"], "");
+  const patient = pickFirst<string>(a, ["patient_name", "patientName", "patient", "full_name"], "");
   const procedure = pickFirst<string>(a, ["service", "procedure"], "");
   const dateRaw = pickFirst<string>(a, ["date", "appointment_date", "preferredDate"], "");
   const timeRaw = pickFirst<string>(a, ["time_start", "timeStart", "preferredTime", "time"], "");
   const status = String(pickFirst<string>(a, ["status"], "")).toUpperCase();
+
+  // 👇 keep appointment id so we can attach review later
+  const apptIdRaw = pickFirst<string | number>(a, ["appointment_id", "appointmentId", "id"], 0);
+  const apptIdNum = Number(apptIdRaw) || null;
 
   let time = "";
   if (/^\d{1,2}:\d{2}$/.test(String(timeRaw))) {
@@ -115,6 +130,8 @@ function normalizeAppt(a: any): NormalizedAppt {
   }
 
   return {
+    id: apptIdNum,
+    appointmentId: apptIdNum,
     patient,
     procedure,
     date: fmtDatePretty(String(dateRaw || "")),
@@ -158,24 +175,42 @@ export default function DoctorProfile() {
         if (!res.ok || !json.ok) throw new Error(json.error || "Load failed");
         if (mounted) setDoctor(json.doctor);
 
-        // appointments (active + history)
-        const [respA, respH] = await Promise.all([
+        // appointments (active + history) + reviews for this dentist
+        const [respA, respH, respR] = await Promise.all([
           fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=active`), {
             cache: "no-store",
           }),
           fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=history`), {
             cache: "no-store",
           }),
+          // 👇 new fetch: grab reviews for THIS dentist
+          fetch(joinUrl(API_BASE, `/api/reviews/by-dentist/${id}`), {
+            cache: "no-store",
+          }),
         ]);
 
-        const [jsonA, jsonH] = await Promise.all([respA.json(), respH.json()]);
+        const [jsonA, jsonH, jsonR] = await Promise.all([
+          respA.json(),
+          respH.json(),
+          respR.json(),
+        ]);
+
         if (!respA.ok || !jsonA.ok) throw new Error(jsonA?.error || "Load appointments failed");
         if (!respH.ok || !jsonH.ok) throw new Error(jsonH?.error || "Load appointments failed");
+        if (!respR.ok || !jsonR.ok) throw new Error(jsonR?.error || "Load dentist reviews failed");
 
         const normActive: NormalizedAppt[] = (jsonA.items || []).map((a: any) => normalizeAppt(a));
         const normHistory: NormalizedAppt[] = (jsonH.items || []).map((a: any) => normalizeAppt(a));
 
-        // ✅ Active tab should show PENDING + CONFIRMED (admin "All/Active" view)
+        // build map: appointmentId → reviewText
+        const reviewMap: Record<number, string> = {};
+        (jsonR.reviews || []).forEach((r: DentistReview) => {
+          if (r.appointmentId) {
+            reviewMap[r.appointmentId] = r.reviewText;
+          }
+        });
+
+        // ✅ Active tab should show PENDING + CONFIRMED
         const activeOnly: ActiveRow[] = normActive
           .filter((row) => row.status === "CONFIRMED" || row.status === "PENDING")
           .map((row) => ({
@@ -189,13 +224,20 @@ export default function DoctorProfile() {
         // History: completed and declined
         const historyOnly: HistoryRow[] = normHistory
           .filter((row) => row.status === "COMPLETED" || row.status === "DECLINED")
-          .map((row) => ({
-            patient: row.patient,
-            procedure: row.procedure,
-            date: row.date,
-            time: row.time,
-            review: row.review || "",
-          }));
+          .map((row) => {
+            const cleanApptId = row.appointmentId ?? row.id ?? -1;
+            const fromReviewTable = cleanApptId !== -1 ? reviewMap[cleanApptId] : "";
+            return {
+              patient: row.patient,
+              procedure: row.procedure,
+              date: row.date,
+              time: row.time,
+              // priority:
+              // 1) review from /api/reviews/by-dentist
+              // 2) review coming from appointment api (if ever added)
+              review: fromReviewTable || row.review || "",
+            };
+          });
 
         if (mounted) {
           setActiveRows(activeOnly);
@@ -249,7 +291,10 @@ export default function DoctorProfile() {
               className="flex items-center gap-2 mb-6 sm:mb-8 hover:opacity-70 transition-opacity"
             >
               <svg width="8" height="14" viewBox="0 0 8 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M7.99888 1.1417L6.81983 8.35263e-05L0.332443 6.15361C0.227873 6.25221 0.144677 6.36968 0.0876438 6.49925C0.0306108 6.62882 0.000866405 6.76794 0.000122491 6.9086C-0.000621422 7.04926 0.0276498 7.18869 0.0833092 7.31885C0.138969 7.44902 0.220917 7.56736 0.324439 7.66706L6.74636 13.8921L7.9363 12.763L1.90887 6.9203L7.99888 1.1417Z" fill="black" />
+                <path
+                  d="M7.99888 1.1417L6.81983 8.35263e-05L0.332443 6.15361C0.227873 6.25221 0.144677 6.36968 0.0876438 6.49925C0.0306108 6.62882 0.000866405 6.76794 0.000122491 6.9086C-0.000621422 7.04926 0.0276498 7.18869 0.0833092 7.31885C0.138969 7.44902 0.220917 7.56736 0.324439 7.66706L6.74636 13.8921L7.9363 12.763L1.90887 6.9203L7.99888 1.1417Z"
+                  fill="black"
+                />
               </svg>
               <span className="text-base font-semibold">Back</span>
             </button>
