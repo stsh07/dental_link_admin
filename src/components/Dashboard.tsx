@@ -21,7 +21,7 @@ type DoctorRow = {
   full_name: string;
   position?: string | null;
   work_time?: string | null;
-  patients_today?: number | null; // ignored; we compute counts from appointments
+  patients_today?: number | null;
   status?: 'At Work' | 'Lunch' | 'Off' | 'Absent' | 'At Leave' | string | null;
   created_at?: string;
 };
@@ -36,8 +36,68 @@ type ApiAppointment = {
   status: 'PENDING' | 'CONFIRMED' | 'DECLINED' | 'COMPLETED';
 };
 
+type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
+
+/* ===================== Helpers ===================== */
+const normalize = (s: string) => (s || '').trim().toLowerCase();
+
+// Manila "today" as YYYY-MM-DD (no external libs)
+const todayYMDManila = (): string => {
+  const d = new Date(
+    new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila' })
+  );
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+// parse "HH:MM"
+const parseHHMM = (val?: string | null): { h: number; m: number } | null => {
+  if (!val || typeof val !== "string") return null;
+  const m = val.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]); const mm = Number(m[2]);
+  if (!Number.isFinite(h) || !Number.isFinite(mm)) return null;
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return { h, m: mm };
+};
+const to12hSafe = (hhmm?: string | null): string => {
+  const t = parseHHMM(hhmm);
+  if (!t) return "—";
+  const am = t.h < 12;
+  const h = t.h % 12 || 12;
+  return `${h}:${String(t.m).padStart(2, "0")} ${am ? "AM" : "PM"}`;
+};
+const addMinutesSafe = (hhmm: string | null | undefined, mins: number): string | null => {
+  const t = parseHHMM(hhmm);
+  if (!t) return null;
+  const total = t.h * 60 + t.m + mins;
+  const hh = Math.floor(((total % (24 * 60)) + (24 * 60)) % (24 * 60) / 60);
+  const mm = ((total % (24 * 60)) + (24 * 60)) % (24 * 60) % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+};
+const fmtDateCompact = (ymd: string): string => {
+  // 2025-10-24 -> 10.24.25
+  const [y, m, d] = ymd.split('-');
+  return `${m}.${d}.${String(y).slice(-2)}`;
+};
+
+// Robust normalizer (same as ActiveAppointments)
+const normalizeItem = (raw: any): ApiAppointment => {
+  const id = Number(raw.id ?? 0);
+  const patientName = String(raw.patientName ?? raw.full_name ?? raw.name ?? "").trim();
+  const doctor = String(raw.doctor ?? raw.doctorName ?? raw.dentist ?? "").trim();
+  const date = String(raw.date ?? raw.preferredDate ?? "").slice(0, 10);
+  const timeStart = String(raw.timeStart ?? raw.preferredTime ?? "").slice(0, 5);
+  const service = String(raw.service ?? raw.serviceName ?? raw.procedureName ?? raw.procedure ?? "").trim();
+  const status = (String(raw.status ?? "PENDING").toUpperCase() as ApiAppointment["status"]);
+  return { id, patientName, doctor, date, timeStart, service, status };
+};
+
+/* ===================== Component ===================== */
 const Dashboard: React.FC = () => {
-  /* ===================== STATS ===================== */
+  /* ---------- STATS ---------- */
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsErr, setStatsErr] = useState<string>('');
@@ -58,10 +118,7 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  useEffect(() => {
-    fetchStats();
-  }, []);
-
+  useEffect(() => { fetchStats(); }, []);
   useEffect(() => {
     const refresh = () => fetchStats();
     window.addEventListener('appointments-updated', refresh);
@@ -86,16 +143,18 @@ const Dashboard: React.FC = () => {
     { name: 'Tooth Filling', percentage: 20, color: 'bg-blue-500' }
   ];
 
-  /* ===================== DOCTORS + ACTIVE COUNTS ===================== */
+  /* ---------- DOCTORS + ACTIVE COUNTS & TODAY LIST ---------- */
   const [doctors, setDoctors] = useState<DoctorRow[]>([]);
   const [doctorsLoading, setDoctorsLoading] = useState<boolean>(true);
   const [doctorsErr, setDoctorsErr] = useState<string>('');
 
-  // Map of normalized doctor name -> active appt count
+  // Active counts (Pending + Confirmed) per doctor
   const [activeCounts, setActiveCounts] = useState<Record<string, number>>({});
   const [countsLoading, setCountsLoading] = useState<boolean>(true);
 
-  const normalize = (s: string) => (s || '').trim().toLowerCase();
+  // Today’s approved appointments (for the dashboard card)
+  const [todaysApproved, setTodaysApproved] = useState<ApiAppointment[]>([]);
+  const [todayLoading, setTodayLoading] = useState<boolean>(true);
 
   const fetchDoctors = async () => {
     try {
@@ -113,17 +172,20 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Get active appointments (PENDING + CONFIRMED) and count by doctor name
-  const fetchActiveCounts = async () => {
+  const fetchAppointmentsForDashboard = async () => {
     try {
       setCountsLoading(true);
+      setTodayLoading(true);
       const u = new URL('http://localhost:4002/api/admin/appointments');
       u.searchParams.set('page', '1');
       u.searchParams.set('pageSize', '500');
       const res = await fetch(u.toString(), { cache: 'no-store' });
-      const json: any = await res.json();
+      const json: ApiResponse | any = await res.json();
       if (!res.ok) throw new Error(json?.error || 'Failed to load appointments');
-      const items: ApiAppointment[] = json.items || [];
+
+      const items: ApiAppointment[] = (json.items || []).map(normalizeItem);
+
+      // Active = PENDING + CONFIRMED (for counts by doctor)
       const active = items.filter(a => a.status === 'PENDING' || a.status === 'CONFIRMED');
 
       const map: Record<string, number> = {};
@@ -133,27 +195,32 @@ const Dashboard: React.FC = () => {
         map[key] = (map[key] ?? 0) + 1;
       }
       setActiveCounts(map);
-    } catch (e) {
-      // keep last counts on error
+
+      // Today's Approved = date == today(Manila) AND status == CONFIRMED
+      const todayYMD = todayYMDManila();
+      const todays = items
+        .filter(a => a.status === 'CONFIRMED' && a.date === todayYMD)
+        .sort((a, b) => (a.timeStart < b.timeStart ? -1 : a.timeStart > b.timeStart ? 1 : 0));
+
+      setTodaysApproved(todays);
+    } catch {
+      // Keep last values on error
     } finally {
       setCountsLoading(false);
+      setTodayLoading(false);
     }
   };
 
-  const loadDoctorsAndCounts = async () => {
-    await Promise.all([fetchDoctors(), fetchActiveCounts()]);
+  const loadAll = async () => {
+    await Promise.all([fetchDoctors(), fetchAppointmentsForDashboard()]);
   };
 
+  useEffect(() => { loadAll(); }, []);
   useEffect(() => {
-    loadDoctorsAndCounts();
-  }, []);
-
-  // Refresh when appointments or doctors change elsewhere (profile/status or approvals)
-  useEffect(() => {
-    const refresh = () => loadDoctorsAndCounts();
+    const refresh = () => loadAll();
     window.addEventListener('appointments-updated', refresh);
     window.addEventListener('doctors-updated', refresh);
-    window.addEventListener('focus', refresh); // refresh when coming back to the tab
+    window.addEventListener('focus', refresh);
     return () => {
       window.removeEventListener('appointments-updated', refresh);
       window.removeEventListener('doctors-updated', refresh);
@@ -174,12 +241,6 @@ const Dashboard: React.FC = () => {
 
   // Only show "At Work"
   const doctorsAtWork = doctors.filter((d) => (d.status || '') === 'At Work');
-
-  const appointmentsSamples = [
-    { patient: 'Juan Dela Cruz', time: '10:00AM', date: '10.24.24', treatment: 'Cleaning' },
-    { patient: 'Juan Dela Cruz', time: '8:00 AM',  date: '10.24.24', treatment: 'Consultation' },
-    { patient: 'Juan Dela Cruz', time: '2:00 PM',  date: '10.24.24', treatment: 'Tooth Filling' }
-  ];
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
@@ -283,7 +344,7 @@ const Dashboard: React.FC = () => {
               )}
             </div>
 
-            {/* Today's Appointments (sample/static) */}
+            {/* Today's Appointments (dynamic: only CONFIRMED for Manila today) */}
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
               <h3 className="text-lg font-semibold text-gray-800 mb-10">Todays Appointments</h3>
 
@@ -294,27 +355,41 @@ const Dashboard: React.FC = () => {
                 <span className="text-left">Treatment type</span>
               </div>
 
-              <div className="space-y-3">
-                {appointmentsSamples.map((a, i) => (
-                  <div
-                    key={i}
-                    className="grid grid-cols-3 items-center gap-4 rounded-xl border border-gray-200 bg-white shadow-sm px-4 py-3"
-                  >
-                    <div className="truncate">
-                      <p className="text-sm font-medium text-gray-900">{a.patient}</p>
-                    </div>
+              {todayLoading ? (
+                <p className="text-sm text-gray-500 px-1">Loading today’s appointments…</p>
+              ) : todaysApproved.length > 0 ? (
+                <div className="space-y-3">
+                  {todaysApproved.map((a) => {
+                    const start12 = to12hSafe(a.timeStart);
+                    const endHM = addMinutesSafe(a.timeStart, 120);
+                    const end12 = endHM ? to12hSafe(endHM) : "—";
+                    const timeRange = start12 !== "—" && end12 !== "—" ? `${start12}` : start12;
+                    const dateDisp = fmtDateCompact(a.date);
+                    return (
+                      <div
+                        key={a.id}
+                        className="grid grid-cols-3 items-center gap-4 rounded-xl border border-gray-200 bg-white shadow-sm px-4 py-3"
+                      >
+                        <div className="truncate">
+                          <p className="text-sm font-medium text-gray-900">{a.patientName || '—'}</p>
+                        </div>
 
-                    <div>
-                      <p className="text-sm font-semibold text-gray-900">{a.time}</p>
-                      <p className="text-xs text-gray-400">{a.date}</p>
-                    </div>
+                        <div>
+                          <p className="text-sm font-semibold text-gray-900">{timeRange}</p>
+                          <p className="text-xs text-gray-400">{dateDisp}</p>
+                        </div>
 
-                    <div className="text-left">
-                      <p className="text-sm font-semibold text-gray-900">{a.treatment}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                        <div className="text-left">
+                          <p className="text-sm font-semibold text-gray-900">{a.service || '—'}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                // No message when empty — renders nothing
+                <div />
+              )}
             </div>
           </div>
           {/* End Bottom Section */}

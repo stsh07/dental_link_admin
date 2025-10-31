@@ -1,4 +1,3 @@
-// client/components/AppointmentsHistory.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BellIcon, SearchIcon, ArrowUpDownIcon } from "lucide-react";
 import Sidebar from "./Sidebar";

@@ -1,33 +1,32 @@
-// routes/appointments.js
-const express = require('express'); 
+const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 
-/* ===== Manila time helpers ===== */
+
 const OFFSET = 8 * 60 * 60 * 1000;
 const todayManila = () => {
   const d = new Date(Date.now() + OFFSET);
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 };
 const toISODate = (d) => {
   if (!d) return '';
   if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
   const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(d);
-  return m ? `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}` : d;
+  return m ? `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : d;
 };
 const toTime24 = (t) => {
   if (!t) return '';
   if (/^\d{2}:\d{2}(:\d{2})?$/.test(t)) return t.length === 5 ? `${t}:00` : t;
   const a = /^(\d{1,2}):(\d{2})\s*([APap][Mm])$/.exec(t);
   if (!a) return t;
-  let hh = parseInt(a[1],10), mm = a[2], mer = a[3].toUpperCase();
-  if (mer==='PM' && hh!==12) hh+=12;
-  if (mer==='AM' && hh===12) hh=0;
-  return `${String(hh).padStart(2,'0')}:${mm}:00`;
+  let hh = parseInt(a[1], 10), mm = a[2], mer = a[3].toUpperCase();
+  if (mer === 'PM' && hh !== 12) hh += 12;
+  if (mer === 'AM' && hh === 12) hh = 0;
+  return `${String(hh).padStart(2, '0')}:${mm}:00`;
 };
 const manilaInstant = (dateYMD, timeHMS) => {
-  const t = /^\d{2}:\d{2}:\d{2}$/.test(timeHMS||'') ? timeHMS : ((timeHMS||'') + ':00').replace(/:00:00$/,'');
-  const d = new Date(`${dateYMD}T${t||'00:00:00'}+08:00`);
+  const t = /^\d{2}:\d{2}:\d{2}$/.test(timeHMS || '') ? timeHMS : ((timeHMS || '') + ':00').replace(/:00:00$/, '');
+  const d = new Date(`${dateYMD}T${t || '00:00:00'}+08:00`);
   return Number.isNaN(d.getTime()) ? null : d;
 };
 
@@ -75,7 +74,7 @@ router.get('/appointments/slots', async (req, res) => {
           GROUP BY preferred_time`,
         [date, dentistId]
       );
-      countsByStart = new Map(rows.map(r => [r.preferred_time.slice(0,5), Number(r.c)]));
+      countsByStart = new Map(rows.map(r => [r.preferred_time.slice(0, 5), Number(r.c)]));
     }
 
     const today = todayManila();
@@ -149,7 +148,7 @@ router.post('/appointments', async (req, res) => {
     if (!procedureId) missing.push('procedureId');
     if (missing.length) return res.status(400).json({ error: 'MISSING_FIELDS', missing });
 
-    const HM = preferredTime.slice(0,5);
+    const HM = preferredTime.slice(0, 5);
     const blk = BLOCKS.find(b => b.start === HM);
     if (!blk) return res.status(400).json({ error: 'OUTSIDE_BLOCKS' });
 
@@ -195,7 +194,7 @@ router.patch('/appointments/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body || {};
-    const allowed = ['PENDING','CONFIRMED','DECLINED','COMPLETED'];
+    const allowed = ['PENDING', 'CONFIRMED', 'DECLINED', 'COMPLETED'];
     if (!allowed.includes(status)) return res.status(400).json({ error: 'INVALID_STATUS' });
 
     const [r] = await pool.query('UPDATE appointments SET status=? WHERE id=?', [status, id]);
@@ -219,7 +218,7 @@ router.get('/admin/appointments', async (req, res) => {
 
     let where = 'WHERE 1=1';
     const params = [];
-    if (status && ['PENDING','CONFIRMED','DECLINED','COMPLETED'].includes(status)) {
+    if (status && ['PENDING', 'CONFIRMED', 'DECLINED', 'COMPLETED'].includes(status)) {
       where += ' AND a.status=?';
       params.push(status);
     }
@@ -256,8 +255,8 @@ router.get('/admin/appointments', async (req, res) => {
       id: Number(r.id),
       patientName: (r.patientName || '').trim(),
       doctor: (r.doctor || '').trim(),
-      date: (r.date || '').slice(0,10),
-      timeStart: (r.timeStart || '').slice(0,5),
+      date: (r.date || '').slice(0, 10),
+      timeStart: (r.timeStart || '').slice(0, 5),
       service: (r.service || '').trim(),
       status: String(r.status || 'PENDING').toUpperCase(),
     }));
@@ -306,8 +305,8 @@ router.get('/admin/appointments/:id', async (req, res) => {
       gender: row.gender || null,
       address: row.address || null,
       notes: row.notes || null,
-      date: (row.date || '').slice(0,10),
-      timeStart: (row.timeStart || '').slice(0,5),
+      date: (row.date || '').slice(0, 10),
+      timeStart: (row.timeStart || '').slice(0, 5),
       status: String(row.status || 'PENDING').toUpperCase(),
       doctor: row.doctor || '',
       service: row.service || '',
@@ -400,6 +399,61 @@ router.get('/admin/patients', async (req, res) => {
   } catch (err) {
     console.error('GET /admin/patients error:', err);
     res.status(500).json({ error: 'SERVER_ERROR' });
+  }
+});
+
+/* ============================================================================
+   NEW: Doctor-scoped appointments (reuses admin join, filtered by dentist)
+   ----------------------------------------------------------------------------
+   GET /api/doctors/:id/appointments?scope=active|history
+   - scope=active  => CONFIRMED only
+   - scope=history => COMPLETED + DECLINED
+   Returns: { ok: true, items: [...] }
+============================================================================ */
+router.get('/doctors/:id/appointments', async (req, res) => {
+  try {
+    const dentistId = Number(req.params.id);
+    if (!Number.isFinite(dentistId) || dentistId <= 0) {
+      return res.status(400).json({ ok: false, error: 'INVALID_DENTIST_ID' });
+    }
+
+    const scope = (req.query.scope || 'active').toString().toLowerCase();
+    let statusFilter = `a.status='CONFIRMED'`;
+    if (scope === 'history') statusFilter = `a.status IN ('COMPLETED','DECLINED')`;
+    else if (scope !== 'active') return res.status(400).json({ ok: false, error: 'INVALID_SCOPE' });
+
+    const sql = `
+      SELECT
+        a.id,
+        a.full_name      AS patientName,
+        d.full_name      AS doctor,
+        a.preferred_date AS date,
+        a.preferred_time AS timeStart,
+        p.name           AS service,
+        a.status         AS status
+      FROM appointments a
+      LEFT JOIN dentists d   ON d.id = a.dentist_id
+      LEFT JOIN procedures p ON p.id = a.procedure_id
+      WHERE a.dentist_id = ? AND ${statusFilter}
+      ORDER BY a.preferred_date DESC, a.preferred_time ASC, a.id DESC
+      LIMIT 1000`;
+
+    const [rows] = await pool.query(sql, [dentistId]);
+
+    const items = rows.map(r => ({
+      id: Number(r.id),
+      patientName: (r.patientName || '').trim(),
+      doctor: (r.doctor || '').trim(),
+      date: (r.date || '').slice(0, 10),    // YYYY-MM-DD
+      timeStart: (r.timeStart || '').slice(0, 5), // HH:MM
+      service: (r.service || '').trim(),
+      status: String(r.status || 'PENDING').toUpperCase(),
+    }));
+
+    return res.json({ ok: true, items });
+  } catch (err) {
+    console.error('GET /doctors/:id/appointments error:', err);
+    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
   }
 });
 

@@ -31,7 +31,7 @@ type ActiveRow = {
   procedure: string;
   date: string;
   time: string;
-  status: string; // "Approved"
+  status: "Approved" | "Pending";
 };
 
 type HistoryRow = {
@@ -175,21 +175,21 @@ export default function DoctorProfile() {
         const normActive: NormalizedAppt[] = (jsonA.items || []).map((a: any) => normalizeAppt(a));
         const normHistory: NormalizedAppt[] = (jsonH.items || []).map((a: any) => normalizeAppt(a));
 
-        // Active tab must show ONLY confirmed (approved) items
+        // ✅ Active tab should show PENDING + CONFIRMED (admin "All/Active" view)
         const activeOnly: ActiveRow[] = normActive
-          .filter((row: NormalizedAppt) => row.status === "CONFIRMED")
-          .map((row: NormalizedAppt) => ({
+          .filter((row) => row.status === "CONFIRMED" || row.status === "PENDING")
+          .map((row) => ({
             patient: row.patient,
             procedure: row.procedure,
             date: row.date,
             time: row.time,
-            status: "Approved",
+            status: row.status === "CONFIRMED" ? "Approved" : "Pending",
           }));
 
         // History: completed and declined
         const historyOnly: HistoryRow[] = normHistory
-          .filter((row: NormalizedAppt) => row.status === "COMPLETED" || row.status === "DECLINED")
-          .map((row: NormalizedAppt) => ({
+          .filter((row) => row.status === "COMPLETED" || row.status === "DECLINED")
+          .map((row) => ({
             patient: row.patient,
             procedure: row.procedure,
             date: row.date,

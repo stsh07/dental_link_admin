@@ -1,10 +1,9 @@
-// src/popups/DocApptTable.tsx
 type ActiveRow = {
   patient: string;
   procedure: string;
   date: string;
   time: string;
-  status: string; // "Approved" only in Active
+  status: "Approved" | "Pending";
 };
 
 type HistoryRow = {
@@ -21,11 +20,12 @@ type Props = {
   historyData: HistoryRow[];
 };
 
-function StatusPill({ value }: { value: string }) {
-  // Only "Approved" should reach the Active tab now.
+function StatusPill({ value }: { value: "Approved" | "Pending" | string }) {
   const cls =
     value === "Approved"
       ? "bg-green-100 text-green-700"
+      : value === "Pending"
+      ? "bg-yellow-100 text-yellow-700"
       : "bg-gray-100 text-gray-700";
   return (
     <span className={`inline-flex items-center px-2 py-1 rounded text-xs font-semibold ${cls}`}>
