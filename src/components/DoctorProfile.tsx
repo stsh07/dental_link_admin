@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import DocApptTable from "../popups/DocApptTable";
+import ReviewPopup from "../popups/reviewspopup";
 
-/** === API base helper (no separate api.ts needed) === */
 function joinUrl(base: string, path: string) {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
+
 const API_BASE =
   (import.meta as any).env?.VITE_API_URL?.toString() || "http://localhost:4002";
 
@@ -42,7 +43,6 @@ type HistoryRow = {
   review: string;
 };
 
-// unified view of appointments regardless of backend field names
 type NormalizedAppt = {
   id: number | null;
   appointmentId: number | null;
@@ -68,7 +68,11 @@ const fmtDatePretty = (ymd: string) => {
   if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
     const [y, m, d] = ymd.split("-").map(Number);
     const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
-    return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "2-digit" });
+    return dt.toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "long",
+      day: "2-digit",
+    });
   }
   return String(ymd);
 };
@@ -107,21 +111,39 @@ function pickFirst<T = any>(obj: any, names: string[], fallback: T): T {
 }
 
 function normalizeAppt(a: any): NormalizedAppt {
-  const patient = pickFirst<string>(a, ["patient_name", "patientName", "patient", "full_name"], "");
+  const patient = pickFirst<string>(
+    a,
+    ["patient_name", "patientName", "patient", "full_name"],
+    ""
+  );
   const procedure = pickFirst<string>(a, ["service", "procedure"], "");
-  const dateRaw = pickFirst<string>(a, ["date", "appointment_date", "preferredDate"], "");
-  const timeRaw = pickFirst<string>(a, ["time_start", "timeStart", "preferredTime", "time"], "");
+  const dateRaw = pickFirst<string>(
+    a,
+    ["date", "appointment_date", "preferredDate"],
+    ""
+  );
+  const timeRaw = pickFirst<string>(
+    a,
+    ["time_start", "timeStart", "preferredTime", "time"],
+    ""
+  );
   const status = String(pickFirst<string>(a, ["status"], "")).toUpperCase();
 
-  // 👇 keep appointment id so we can attach review later
-  const apptIdRaw = pickFirst<string | number>(a, ["appointment_id", "appointmentId", "id"], 0);
+  const apptIdRaw = pickFirst<string | number>(
+    a,
+    ["appointment_id", "appointmentId", "id"],
+    0
+  );
   const apptIdNum = Number(apptIdRaw) || null;
 
   let time = "";
   if (/^\d{1,2}:\d{2}$/.test(String(timeRaw))) {
     const [sh, sm] = String(timeRaw).split(":").map((n) => Number(n || 0));
     const start12 = to12h(sh, sm);
-    const endHM = addMinutes(`${String(sh).padStart(2, "0")}:${String(sm).padStart(2, "0")}`, 120);
+    const endHM = addMinutes(
+      `${String(sh).padStart(2, "0")}:${String(sm).padStart(2, "0")}`,
+      120
+    );
     const [eh, em] = endHM.split(":").map((n) => Number(n || 0));
     const end12 = to12h(eh, em);
     time = `${start12} – ${end12}`;
@@ -150,11 +172,17 @@ export default function DoctorProfile() {
   const [err, setErr] = useState<string | null>(null);
 
   const [tab, setTab] = useState<"active" | "history">("active");
-
   const [activeRows, setActiveRows] = useState<ActiveRow[]>([]);
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
 
   const [statusSaving, setStatusSaving] = useState(false);
+
+  // popup state
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [selectedReview, setSelectedReview] = useState<{
+    patient: string;
+    review: string;
+  } | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -169,13 +197,13 @@ export default function DoctorProfile() {
         setLoading(true);
         setErr(null);
 
-        // doctor
-        const res = await fetch(joinUrl(API_BASE, `/api/doctors/${id}`), { cache: "no-store" });
+        const res = await fetch(joinUrl(API_BASE, `/api/doctors/${id}`), {
+          cache: "no-store",
+        });
         const json = await res.json();
         if (!res.ok || !json.ok) throw new Error(json.error || "Load failed");
         if (mounted) setDoctor(json.doctor);
 
-        // appointments (active + history) + reviews for this dentist
         const [respA, respH, respR] = await Promise.all([
           fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=active`), {
             cache: "no-store",
@@ -183,7 +211,6 @@ export default function DoctorProfile() {
           fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=history`), {
             cache: "no-store",
           }),
-          // 👇 new fetch: grab reviews for THIS dentist
           fetch(joinUrl(API_BASE, `/api/reviews/by-dentist/${id}`), {
             cache: "no-store",
           }),
@@ -195,14 +222,20 @@ export default function DoctorProfile() {
           respR.json(),
         ]);
 
-        if (!respA.ok || !jsonA.ok) throw new Error(jsonA?.error || "Load appointments failed");
-        if (!respH.ok || !jsonH.ok) throw new Error(jsonH?.error || "Load appointments failed");
-        if (!respR.ok || !jsonR.ok) throw new Error(jsonR?.error || "Load dentist reviews failed");
+        if (!respA.ok || !jsonA.ok)
+          throw new Error(jsonA?.error || "Load appointments failed");
+        if (!respH.ok || !jsonH.ok)
+          throw new Error(jsonH?.error || "Load appointments failed");
+        if (!respR.ok || !jsonR.ok)
+          throw new Error(jsonR?.error || "Load dentist reviews failed");
 
-        const normActive: NormalizedAppt[] = (jsonA.items || []).map((a: any) => normalizeAppt(a));
-        const normHistory: NormalizedAppt[] = (jsonH.items || []).map((a: any) => normalizeAppt(a));
+        const normActive: NormalizedAppt[] = (jsonA.items || []).map((a: any) =>
+          normalizeAppt(a)
+        );
+        const normHistory: NormalizedAppt[] = (jsonH.items || []).map((a: any) =>
+          normalizeAppt(a)
+        );
 
-        // build map: appointmentId → reviewText
         const reviewMap: Record<number, string> = {};
         (jsonR.reviews || []).forEach((r: DentistReview) => {
           if (r.appointmentId) {
@@ -210,7 +243,6 @@ export default function DoctorProfile() {
           }
         });
 
-        // ✅ Active tab should show PENDING + CONFIRMED
         const activeOnly: ActiveRow[] = normActive
           .filter((row) => row.status === "CONFIRMED" || row.status === "PENDING")
           .map((row) => ({
@@ -221,7 +253,6 @@ export default function DoctorProfile() {
             status: row.status === "CONFIRMED" ? "Approved" : "Pending",
           }));
 
-        // History: completed and declined
         const historyOnly: HistoryRow[] = normHistory
           .filter((row) => row.status === "COMPLETED" || row.status === "DECLINED")
           .map((row) => {
@@ -232,9 +263,6 @@ export default function DoctorProfile() {
               procedure: row.procedure,
               date: row.date,
               time: row.time,
-              // priority:
-              // 1) review from /api/reviews/by-dentist
-              // 2) review coming from appointment api (if ever added)
               review: fromReviewTable || row.review || "",
             };
           });
@@ -259,7 +287,9 @@ export default function DoctorProfile() {
     if (!doctor) return;
     if (!confirm("Delete this doctor? This will remove them from the doctors list.")) return;
     try {
-      const res = await fetch(joinUrl(API_BASE, `/api/doctors/${doctor.id}`), { method: "DELETE" });
+      const res = await fetch(joinUrl(API_BASE, `/api/doctors/${doctor.id}`), {
+        method: "DELETE",
+      });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.ok) throw new Error(j.error || "Delete failed");
       window.dispatchEvent(new Event("doctors-updated"));
@@ -271,26 +301,43 @@ export default function DoctorProfile() {
 
   const photo = useMemo(() => buildPhotoUrl(doctor?.profile_url), [doctor?.profile_url]);
 
+  const handleReviewClick = (payload: {
+    patient: string;
+    review: string;
+    date?: string;
+    time?: string;
+    procedure?: string;
+  }) => {
+    setSelectedReview({
+      patient: payload.patient,
+      review: payload.review,
+    });
+    setReviewModalOpen(true);
+  };
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
 
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Header */}
         <header className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
           <h1 className="text-black text-[28px] font-semibold">Doctor Profile</h1>
           <div />
         </header>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto px-8 pt-6 pb-10">
           <div className="max-w-5xl mx-auto bg-white rounded-lg border border-gray-200 shadow-[0_4px_15px_1px_rgba(0,0,0,0.08)] p-6 sm:p-8 lg:p-12">
-            {/* Back */}
             <button
               onClick={() => navigate(-1)}
               className="flex items-center gap-2 mb-6 sm:mb-8 hover:opacity-70 transition-opacity"
             >
-              <svg width="8" height="14" viewBox="0 0 8 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <svg
+                width="8"
+                height="14"
+                viewBox="0 0 8 14"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
                 <path
                   d="M7.99888 1.1417L6.81983 8.35263e-05L0.332443 6.15361C0.227873 6.25221 0.144677 6.36968 0.0876438 6.49925C0.0306108 6.62882 0.000866405 6.76794 0.000122491 6.9086C-0.000621422 7.04926 0.0276498 7.18869 0.0833092 7.31885C0.138969 7.44902 0.220917 7.56736 0.324439 7.66706L6.74636 13.8921L7.9363 12.763L1.90887 6.9203L7.99888 1.1417Z"
                   fill="black"
@@ -304,7 +351,6 @@ export default function DoctorProfile() {
 
             {doctor && (
               <>
-                {/* Profile row */}
                 <div className="flex flex-col lg:flex-row gap-6 lg:gap-8 mb-8 sm:mb-10">
                   <div className="flex justify-center lg:justify-start">
                     <div className="w-40 h-40 sm:w-48 sm:h-48 rounded-full bg-gray-200 flex items-center justify-center text-3xl font-bold text-gray-600 overflow-hidden border border-gray-300">
@@ -328,7 +374,6 @@ export default function DoctorProfile() {
                     </div>
                   </div>
 
-                  {/* Info Grid */}
                   <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4 sm:gap-y-6">
                     <div>
                       <div className="text-xs font-semibold text-gray-500 mb-1">Full name</div>
@@ -379,7 +424,6 @@ export default function DoctorProfile() {
                       </div>
                     </div>
 
-                    {/* Working hours + status (dropdown) */}
                     <div className="sm:col-span-2 lg:col-span-3">
                       <div className="flex flex-col gap-2 text-sm">
                         <span className="font-semibold text-gray-900">
@@ -423,7 +467,9 @@ export default function DoctorProfile() {
                                   key={opt}
                                   onClick={async (e) => {
                                     e.preventDefault();
-                                    (e.currentTarget.closest("details") as HTMLDetailsElement)?.removeAttribute("open");
+                                    (e.currentTarget.closest("details") as HTMLDetailsElement)?.removeAttribute(
+                                      "open"
+                                    );
 
                                     setStatusSaving(true);
                                     try {
@@ -468,7 +514,6 @@ export default function DoctorProfile() {
                   </div>
                 </div>
 
-                {/* Tabs */}
                 <div className="mb-6">
                   <div className="flex gap-2 bg-gray-100 rounded-md p-1 inline-flex">
                     <button
@@ -490,13 +535,26 @@ export default function DoctorProfile() {
                   </div>
                 </div>
 
-                {/* Table */}
-                <DocApptTable tab={tab} activeData={activeRows} historyData={historyRows} />
+                <DocApptTable
+                  tab={tab}
+                  activeData={activeRows}
+                  historyData={historyRows}
+                  onReviewClick={handleReviewClick}
+                />
               </>
             )}
           </div>
         </div>
       </div>
+
+      {selectedReview && (
+        <ReviewPopup
+          open={reviewModalOpen}
+          onClose={() => setReviewModalOpen(false)}
+          patient={selectedReview.patient}
+          review={selectedReview.review}
+        />
+      )}
     </div>
   );
 }

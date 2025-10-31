@@ -18,6 +18,7 @@ type Props = {
   tab: "active" | "history";
   activeData: ActiveRow[];
   historyData: HistoryRow[];
+  onReviewClick?: (row: HistoryRow) => void;
 };
 
 function StatusPill({ value }: { value: "Approved" | "Pending" | string }) {
@@ -34,7 +35,12 @@ function StatusPill({ value }: { value: "Approved" | "Pending" | string }) {
   );
 }
 
-export default function DocApptTable({ tab, activeData, historyData }: Props) {
+export default function DocApptTable({
+  tab,
+  activeData,
+  historyData,
+  onReviewClick,
+}: Props) {
   const isActive = tab === "active";
   const hasRows = isActive ? activeData.length > 0 : historyData.length > 0;
 
@@ -77,7 +83,19 @@ export default function DocApptTable({ tab, activeData, historyData }: Props) {
                     <td className="px-4 sm:px-5 py-3 sm:py-3.5 text-xs">{a.procedure}</td>
                     <td className="px-4 sm:px-5 py-3 sm:py-3.5 text-xs">{a.date}</td>
                     <td className="px-4 sm:px-5 py-3 sm:py-3.5 text-xs">{a.time}</td>
-                    <td className="px-4 sm:px-5 py-3 sm:py-3.5 text-xs">{a.review}</td>
+                    <td className="px-4 sm:px-5 py-3 sm:py-3.5 text-xs">
+                      {a.review ? (
+                        <button
+                          type="button"
+                          onClick={() => onReviewClick && onReviewClick(a)}
+                          className="text-[#2bacd0] underline-offset-2 hover:underline text-xs text-left"
+                        >
+                          {a.review.length > 35 ? a.review.slice(0, 35) + "..." : a.review}
+                        </button>
+                      ) : (
+                        <span className="text-gray-400 text-xs">No review</span>
+                      )}
+                    </td>
                   </tr>
                 ))
               )
