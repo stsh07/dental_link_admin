@@ -164,14 +164,6 @@ export default function AppointmentsHistory(): JSX.Element {
                 className="border-0 outline-none bg-transparent text-sm text-gray-700 placeholder:text-gray-400 h-auto p-0 w-full"
               />
             </div>
-            <button
-              onClick={() => setSortAsc(s => !s)}
-              className="flex items-center gap-1 px-3 py-2 rounded-lg border text-sm text-gray-700 hover:bg-gray-50"
-              title="Toggle date sort"
-            >
-              <ArrowUpDownIcon className="w-4 h-4" />
-              {sortAsc ? "Oldest first" : "Newest first"}
-            </button>
             <BellIcon className="w-5 h-5 text-gray-600" />
           </div>
         </header>
@@ -221,14 +213,34 @@ export default function AppointmentsHistory(): JSX.Element {
 
                 <thead>
                   <tr className="border-b">
-                    {["Patient Name","Doctor","Date","Time","Service","Status"].map(head => (
-                      <th
-                        key={head}
-                        className={`text-sm md:text-base font-bold text-gray-900 py-3 ${head==="Patient Name" ? "pl-8 text-left" : "px-4 text-left"}`}
-                      >
-                        {head}
-                      </th>
-                    ))}
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 pl-8 text-left">
+                      Patient Name
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      Doctor
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      <div className="flex items-center gap-2">
+                        <span>Date</span>
+                        <button
+                          onClick={() => setSortAsc(s => !s)}
+                          className="inline-flex items-center p-1.5 rounded-md border text-xs text-gray-700 hover:bg-gray-50"
+                          title="Toggle date sort"
+                          aria-label="Toggle date sort"
+                        >
+                          <ArrowUpDownIcon className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      Time
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      Service
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      Status
+                    </th>
                   </tr>
                 </thead>
 

@@ -1,9 +1,26 @@
+// server/src/routes/reviews.js
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 
-const clampRating = (n) => Math.max(1, Math.min(5, Number(n || 0)));
+/* Ensure table (no rating column) */
+async function ensureTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS reviews (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      appointment_id INT NOT NULL,
+      dentist_id INT NOT NULL,
+      user_email VARCHAR(255) NOT NULL,
+      review_text TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_appt (appointment_id),
+      INDEX idx_dentist (dentist_id),
+      INDEX idx_email (user_email)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+}
 
+/* Fetch review for an appointment (no rating returned) */
 router.get('/reviews/by-appointment/:id', async (req, res) => {
   try {
     const apptId = Number(req.params.id);
@@ -11,8 +28,10 @@ router.get('/reviews/by-appointment/:id', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'INVALID_APPOINTMENT_ID' });
     }
 
+    await ensureTable();
+
     const [[row]] = await pool.query(
-      `SELECT id, appointment_id, dentist_id, user_email, rating, review_text, created_at
+      `SELECT id, appointment_id, dentist_id, user_email, review_text, created_at
          FROM reviews
         WHERE appointment_id = ?
         LIMIT 1`,
@@ -28,7 +47,6 @@ router.get('/reviews/by-appointment/:id', async (req, res) => {
         appointmentId: Number(row.appointment_id),
         dentistId: Number(row.dentist_id),
         userEmail: row.user_email,
-        rating: Number(row.rating),
         reviewText: row.review_text,
         createdAt: row.created_at,
       },
@@ -39,23 +57,21 @@ router.get('/reviews/by-appointment/:id', async (req, res) => {
   }
 });
 
+/* Create review (derive dentist & email from the appointment; no rating) */
 router.post('/reviews', async (req, res) => {
   try {
-    let { appointmentId, dentistId, userEmail, rating, reviewText } = req.body || {};
+    await ensureTable();
+
+    let { appointmentId, reviewText } = req.body || {};
     appointmentId = Number(appointmentId);
-    dentistId = Number(dentistId);
-    rating = clampRating(rating);
-    userEmail = String(userEmail || '').trim().toLowerCase();
     reviewText = String(reviewText || '').trim();
 
     const missing = [];
     if (!appointmentId) missing.push('appointmentId');
-    if (!dentistId) missing.push('dentistId');
-    if (!userEmail) missing.push('userEmail');
     if (!reviewText) missing.push('reviewText');
-    if (!rating) missing.push('rating');
     if (missing.length) return res.status(400).json({ ok: false, error: 'MISSING_FIELDS', missing });
 
+    // Load appointment and validate
     const [[appt]] = await pool.query(
       `SELECT id, email, status, dentist_id
          FROM appointments
@@ -67,13 +83,11 @@ router.post('/reviews', async (req, res) => {
     if (String(appt.status || '') !== 'COMPLETED') {
       return res.status(400).json({ ok: false, error: 'APPOINTMENT_NOT_COMPLETED' });
     }
-    if (appt.dentist_id !== dentistId) {
-      return res.status(400).json({ ok: false, error: 'DENTIST_MISMATCH' });
-    }
-    if (String(appt.email || '').toLowerCase() !== userEmail) {
-      return res.status(403).json({ ok: false, error: 'EMAIL_MISMATCH' });
-    }
 
+    const dentistId = Number(appt.dentist_id || 0);
+    const userEmail = String(appt.email || '').toLowerCase();
+
+    // One review per appointment
     const [[dup]] = await pool.query(
       `SELECT id FROM reviews WHERE appointment_id = ? LIMIT 1`,
       [appointmentId]
@@ -81,9 +95,9 @@ router.post('/reviews', async (req, res) => {
     if (dup) return res.status(409).json({ ok: false, error: 'ALREADY_REVIEWED' });
 
     const [r] = await pool.query(
-      `INSERT INTO reviews (appointment_id, dentist_id, user_email, rating, review_text)
-       VALUES (?, ?, ?, ?, ?)`,
-      [appointmentId, dentistId, userEmail, rating, reviewText]
+      `INSERT INTO reviews (appointment_id, dentist_id, user_email, review_text)
+       VALUES (?, ?, ?, ?)`,
+      [appointmentId, dentistId, userEmail, reviewText]
     );
 
     res.status(201).json({
@@ -92,7 +106,6 @@ router.post('/reviews', async (req, res) => {
       appointmentId,
       dentistId,
       userEmail,
-      rating,
       reviewText,
     });
   } catch (err) {

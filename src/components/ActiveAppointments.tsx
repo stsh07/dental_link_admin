@@ -1,6 +1,6 @@
 // client/components/ActiveAppointments.tsx
 import { useEffect, useMemo, useState } from "react";
-import { BellIcon, SearchIcon, ChevronRight } from "lucide-react";
+import { BellIcon, SearchIcon, ChevronRight, ArrowUpDownIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import profile from "../assets/profile.svg";
@@ -123,6 +123,9 @@ export default function ActiveAppointments(): JSX.Element {
   const [selected, setSelected] = useState<AppointmentDetail | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
+  // sort state (false = Newest first)
+  const [sortAsc, setSortAsc] = useState<boolean>(false);
+
   useEffect(() => {
     const run = async () => {
       try {
@@ -136,10 +139,6 @@ export default function ActiveAppointments(): JSX.Element {
         const res = await fetch(u.toString(), { cache: "no-store" });
         const json: ApiResponse = await res.json();
         if (!res.ok || (json as any).error) throw new Error((json as any).error || "load failed");
-
-        if ((json as any)?.items?.length) {
-          console.log("Sample admin item:", (json as any).items[0]); // <— temp debug
-        }
 
         setItems((json.items || []).map(normalizeItem));
       } catch (e: any) {
@@ -158,6 +157,17 @@ export default function ActiveAppointments(): JSX.Element {
     if (tab === "approved") return base.filter(a => a.status === "CONFIRMED");
     return base;
   }, [items, tab]);
+
+  // sort by date + timeStart
+  const sorted = useMemo(() => {
+    const copy = [...filtered];
+    copy.sort((a, b) => {
+      const aKey = `${a.date} ${a.timeStart}`;
+      const bKey = `${b.date} ${b.timeStart}`;
+      return sortAsc ? aKey.localeCompare(bKey) : bKey.localeCompare(aKey);
+    });
+    return copy;
+  }, [filtered, sortAsc]);
 
   const fetchDetails = async (id: number): Promise<Partial<AppointmentDetail>> => {
     const res = await fetch(`http://localhost:4002/api/admin/appointments/${id}`, { cache: "no-store" });
@@ -223,7 +233,7 @@ export default function ActiveAppointments(): JSX.Element {
   const bounceToHistory = () => {
     window.dispatchEvent(new Event("appointments-updated"));
     window.dispatchEvent(new Event("patients-updated"));
-    navigate("/appointments/history"); // <-- match your App.tsx route
+    navigate("/appointments/history");
   };
 
   const handleApprove = async () => {
@@ -338,32 +348,54 @@ export default function ActiveAppointments(): JSX.Element {
                 <colgroup>
                   <col className="w-[24%]" />
                   <col className="w-[15%]" />
-                  <col className="w-[15%]" />
+                  <col className="w-[20%]" />
                   <col className="w-[12%]" />
                   <col className="w-[15%]" />
-                  <col className="w-[14%]" />
-                  <col className="w-[6%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[4%]" />
                 </colgroup>
 
                 <thead>
                   <tr className="border-b">
-                    {["Patient Name","Doctor","Date","Time","Service","Status",""].map((head) => (
-                      <th
-                        key={head}
-                        className={`text-sm md:text-base font-bold text-gray-900 py-3 ${
-                          head === "Patient Name" ? "pl-8 text-left"
-                          : head === "" ? "pr-8 text-right"
-                          : "px-4 text-left"
-                        }`}
-                      >
-                        {head}
-                      </th>
-                    ))}
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 pl-8 text-left">
+                      Patient Name
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      Doctor
+                    </th>
+
+                    {/* Date + inline sort toggle (icon only) */}
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      <div className="flex items-center gap-2">
+                        <span>Date</span>
+                        <button
+                          onClick={() => setSortAsc((s) => !s)}
+                          className="inline-flex items-center p-1.5 rounded-md border text-xs text-gray-700 hover:bg-gray-50"
+                          title="Toggle date sort"
+                          aria-label={`Toggle date sort (${sortAsc ? "Oldest first" : "Newest first"})`}
+                        >
+                          <ArrowUpDownIcon className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </th>
+
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      Time
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      Service
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
+                      Status
+                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 pr-8 text-right">
+                      {/* chevron col */}
+                    </th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {filtered.map((a) => {
+                  {sorted.map((a) => {
                     const start12 = to12hSafe(a.timeStart);
                     const endHM = addMinutesSafe(a.timeStart, 120);
                     const end12 = endHM ? to12hSafe(endHM) : "—";
@@ -402,7 +434,7 @@ export default function ActiveAppointments(): JSX.Element {
                     );
                   })}
 
-                  {(!loading && !error && filtered.length === 0) && (
+                  {(!loading && !error && sorted.length === 0) && (
                     <tr>
                       <td colSpan={7} className="py-6 text-center text-sm text-gray-500">
                         No appointments found.
