@@ -1,8 +1,11 @@
+// server/src/routes/appointments.js
 const express = require('express');
 const router = express.Router();
 const { pool } = require('../db');
 
-
+/* =========================
+   Time helpers (Asia/Manila)
+   ========================= */
 const OFFSET = 8 * 60 * 60 * 1000;
 const todayManila = () => {
   const d = new Date(Date.now() + OFFSET);
@@ -30,7 +33,9 @@ const manilaInstant = (dateYMD, timeHMS) => {
   return Number.isNaN(d.getTime()) ? null : d;
 };
 
-/* ===== 2-hour blocks (no lunch 12–1) ===== */
+/* =========================
+   2-hour blocks (no lunch)
+   ========================= */
 const BLOCKS = [
   { start: '08:00', end: '10:00' },
   { start: '10:00', end: '12:00' },
@@ -38,16 +43,21 @@ const BLOCKS = [
   { start: '15:00', end: '17:00' },
 ];
 
-/* ===== Reference data ===== */
+/* =========================
+   Reference data
+   ========================= */
 router.get('/dentists', async (_req, res) => {
   try {
-    const [rows] = await pool.query('SELECT id, full_name AS name FROM dentists WHERE is_active=1 ORDER BY name');
+    const [rows] = await pool.query(
+      'SELECT id, full_name AS name FROM dentists WHERE is_active=1 ORDER BY name'
+    );
     res.json(rows);
   } catch (err) {
     console.error('GET /dentists error:', err);
     res.status(500).json({ error: 'SERVER_ERROR' });
   }
 });
+
 router.get('/procedures', async (_req, res) => {
   try {
     const [rows] = await pool.query('SELECT id, name FROM procedures ORDER BY name');
@@ -58,7 +68,9 @@ router.get('/procedures', async (_req, res) => {
   }
 });
 
-/* ===== Slots (disable only AFTER block end) ===== */
+/* =========================
+   Slots (disable AFTER block end)
+   ========================= */
 router.get('/appointments/slots', async (req, res) => {
   try {
     const date = toISODate(String(req.query.date || ''));
@@ -74,7 +86,9 @@ router.get('/appointments/slots', async (req, res) => {
           GROUP BY preferred_time`,
         [date, dentistId]
       );
-      countsByStart = new Map(rows.map(r => [r.preferred_time.slice(0, 5), Number(r.c)]));
+      countsByStart = new Map(
+        rows.map(r => [String(r.preferred_time || '').slice(0, 5), Number(r.c)])
+      );
     }
 
     const today = todayManila();
@@ -94,7 +108,9 @@ router.get('/appointments/slots', async (req, res) => {
   }
 });
 
-/* ===== Public list ===== */
+/* =========================
+   Public list (optional)
+   ========================= */
 router.get('/appointments', async (req, res) => {
   try {
     const { status } = req.query;
@@ -114,7 +130,9 @@ router.get('/appointments', async (req, res) => {
   }
 });
 
-/* ===== Create ===== */
+/* =========================
+   Create
+   ========================= */
 router.post('/appointments', async (req, res) => {
   try {
     let {
@@ -148,7 +166,7 @@ router.post('/appointments', async (req, res) => {
     if (!procedureId) missing.push('procedureId');
     if (missing.length) return res.status(400).json({ error: 'MISSING_FIELDS', missing });
 
-    const HM = preferredTime.slice(0, 5);
+    const HM = String(preferredTime || '').slice(0, 5);
     const blk = BLOCKS.find(b => b.start === HM);
     if (!blk) return res.status(400).json({ error: 'OUTSIDE_BLOCKS' });
 
@@ -189,7 +207,9 @@ router.post('/appointments', async (req, res) => {
   }
 });
 
-/* ===== Update status (public patch) ===== */
+/* =========================
+   Update status (public)
+   ========================= */
 router.patch('/appointments/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
@@ -207,7 +227,9 @@ router.patch('/appointments/:id/status', async (req, res) => {
   }
 });
 
-/* ===== ADMIN: joined list for table (LEFT JOIN + strict aliases) ===== */
+/* =========================
+   ADMIN: joined list
+   ========================= */
 router.get('/admin/appointments', async (req, res) => {
   try {
     const status = (req.query.status || '').toString().toUpperCase();
@@ -255,8 +277,8 @@ router.get('/admin/appointments', async (req, res) => {
       id: Number(r.id),
       patientName: (r.patientName || '').trim(),
       doctor: (r.doctor || '').trim(),
-      date: (r.date || '').slice(0, 10),
-      timeStart: (r.timeStart || '').slice(0, 5),
+      date: String(r.date || '').slice(0, 10),
+      timeStart: String(r.timeStart || '').slice(0, 5),
       service: (r.service || '').trim(),
       status: String(r.status || 'PENDING').toUpperCase(),
     }));
@@ -268,7 +290,9 @@ router.get('/admin/appointments', async (req, res) => {
   }
 });
 
-/* ===== ADMIN: single detail ===== */
+/* =========================
+   ADMIN: single detail
+   ========================= */
 router.get('/admin/appointments/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -305,8 +329,8 @@ router.get('/admin/appointments/:id', async (req, res) => {
       gender: row.gender || null,
       address: row.address || null,
       notes: row.notes || null,
-      date: (row.date || '').slice(0, 10),
-      timeStart: (row.timeStart || '').slice(0, 5),
+      date: String(row.date || '').slice(0, 10),
+      timeStart: String(row.timeStart || '').slice(0, 5),
       status: String(row.status || 'PENDING').toUpperCase(),
       doctor: row.doctor || '',
       service: row.service || '',
@@ -317,7 +341,9 @@ router.get('/admin/appointments/:id', async (req, res) => {
   }
 });
 
-/* ===== ADMIN: dashboard stats ===== */
+/* =========================
+   ADMIN: dashboard stats
+   ========================= */
 router.get('/admin/stats', async (_req, res) => {
   try {
     const [[row]] = await pool.query(
@@ -343,7 +369,9 @@ router.get('/admin/stats', async (_req, res) => {
   }
 });
 
-/* ===== ADMIN: patients list (CONFIRMED + COMPLETED) ===== */
+/* =========================
+   ADMIN: patients from confirmed/completed
+   ========================= */
 router.get('/admin/patients', async (req, res) => {
   try {
     const search = (req.query.search || '').toString().trim();
@@ -402,14 +430,9 @@ router.get('/admin/patients', async (req, res) => {
   }
 });
 
-/* ============================================================================
-   NEW: Doctor-scoped appointments (reuses admin join, filtered by dentist)
-   ----------------------------------------------------------------------------
-   GET /api/doctors/:id/appointments?scope=active|history
-   - scope=active  => CONFIRMED only
-   - scope=history => COMPLETED + DECLINED
-   Returns: { ok: true, items: [...] }
-============================================================================ */
+/* =========================
+   Doctor-scoped (active/history)
+   ========================= */
 router.get('/doctors/:id/appointments', async (req, res) => {
   try {
     const dentistId = Number(req.params.id);
@@ -444,8 +467,8 @@ router.get('/doctors/:id/appointments', async (req, res) => {
       id: Number(r.id),
       patientName: (r.patientName || '').trim(),
       doctor: (r.doctor || '').trim(),
-      date: (r.date || '').slice(0, 10),    // YYYY-MM-DD
-      timeStart: (r.timeStart || '').slice(0, 5), // HH:MM
+      date: String(r.date || '').slice(0, 10),
+      timeStart: String(r.timeStart || '').slice(0, 5),
       service: (r.service || '').trim(),
       status: String(r.status || 'PENDING').toUpperCase(),
     }));
@@ -453,6 +476,84 @@ router.get('/doctors/:id/appointments', async (req, res) => {
     return res.json({ ok: true, items });
   } catch (err) {
     console.error('GET /doctors/:id/appointments error:', err);
+    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
+  }
+});
+
+/* =========================
+   USER history (COMPLETED)
+   GET /api/appointments/user/history?email=you@example.com
+   ========================= */
+router.get('/appointments/user/history', async (req, res) => {
+  try {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ ok: false, error: 'MISSING_EMAIL' });
+
+    const sql = `
+      SELECT
+        a.id,
+        a.full_name      AS patientName,
+        d.full_name      AS doctor,
+        a.preferred_date AS date,
+        a.preferred_time AS timeStart,
+        p.name           AS service,
+        a.dentist_id     AS dentistId
+      FROM appointments a
+      LEFT JOIN dentists d   ON d.id = a.dentist_id
+      LEFT JOIN procedures p ON p.id = a.procedure_id
+      WHERE LOWER(a.email) = LOWER(?) AND a.status = 'COMPLETED'
+      ORDER BY a.preferred_date DESC, a.preferred_time DESC, a.id DESC
+      LIMIT 1000
+    `;
+    const [rows] = await pool.query(sql, [email]);
+
+    const items = rows.map(r => ({
+      id: Number(r.id),
+      service: (r.service || '').trim(),
+      dateISO: String(r.date || '').slice(0, 10),
+      dentistId: Number(r.dentistId || 0),
+      dentist: (r.doctor || '').trim(),
+    }));
+
+    res.json({ ok: true, items });
+  } catch (err) {
+    console.error('GET /appointments/user/history error:', err);
+    res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
+  }
+});
+
+/* =========================
+   PUBLIC: read one appointment
+   (used by /user/history/review/[appointmentId])
+   ========================= */
+router.get('/appointments/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [[row]] = await pool.query(
+      `SELECT
+         a.id,
+         a.preferred_date  AS date,
+         a.preferred_time  AS timeStart,
+         d.full_name       AS doctor,
+         p.name            AS service
+       FROM appointments a
+       LEFT JOIN dentists   d ON d.id = a.dentist_id
+       LEFT JOIN procedures p ON p.id = a.procedure_id
+       WHERE a.id = ?
+       LIMIT 1`,
+      [id]
+    );
+    if (!row) return res.status(404).json({ ok: false, error: 'NOT_FOUND' });
+
+    return res.json({
+      id: Number(id),
+      date: String(row.date || '').slice(0, 10),
+      timeStart: String(row.timeStart || '').slice(0, 5),
+      doctor: row.doctor || '',
+      service: row.service || '',
+    });
+  } catch (err) {
+    console.error('GET /appointments/:id error:', err);
     res.status(500).json({ ok: false, error: 'SERVER_ERROR' });
   }
 });

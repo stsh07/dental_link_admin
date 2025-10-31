@@ -24,22 +24,18 @@ app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 /* ---------- Health ---------- */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-/* ---------- Routers (mount BEFORE 404) ---------- */
+/* ---------- Routers ---------- */
 const authRouter = require("./routes/auth");
 const resetAdminRouter = require("./routes/reset-admin");
-
-// ✅ canonical routers you actually use
-const appointmentsRouter = require("./routes/appointments"); // serves /api/admin/appointments, /api/admin/appointments/:id, /api/appointments/:id/status, /api/admin/stats
-const doctorsRouter = require("./routes/doctors");           // serves /api/doctors/*
+const appointmentsRouter = require("./routes/appointments");
+const doctorsRouter = require("./routes/doctors");
+const reviewsRouter = require("./routes/reviews");        // <-- NEW
 
 app.use("/api/auth", authRouter);
 app.use("/api/reset-admin", resetAdminRouter);
 app.use("/api", appointmentsRouter);
 app.use("/api/doctors", doctorsRouter);
-
-// ❌ DO NOT mount the legacy admin router — it conflicts and causes 404s
-// const adminRouter = require("./routes/admin");
-// app.use("/api/admin", adminRouter);
+app.use("/api", reviewsRouter);                            // <-- mount
 
 /* ---------- 404 ---------- */
 app.use((req, res) => res.status(404).json({ ok: false, error: "NOT_FOUND" }));
