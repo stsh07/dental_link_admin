@@ -1,118 +1,237 @@
-import { useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+// src/popups/PatientsPopup.tsx
+import { useEffect, useState } from "react";
 import { ChevronLeft } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
-export default function PatientsPopup() {
-  const [activeTab, setActiveTab] = useState<"active" | "history">("active");
+type PatientsPopupProps = {
+  patientId?: number;
+};
+
+type Patient = {
+  id: number;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  gender: string | null;
+  age: number | null;
+  address: string | null;
+  lastVisit: string | null;
+};
+
+type PatientAppointment = {
+  id: number;
+  procedure: string;
+  date: string;
+  time: string;
+  dentist: string;
+  status: string;
+};
+
+const API_BASE =
+  (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/+$/, "") ||
+  "http://localhost:4002";
+
+export default function PatientsPopup({ patientId }: PatientsPopupProps) {
   const navigate = useNavigate();
-  const { id } = useParams();
+
+  const [patient, setPatient] = useState<Patient | null>(null);
+  const [appts, setAppts] = useState<PatientAppointment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  // 🔁 fetch real data
+  useEffect(() => {
+    let ignore = false;
+
+    async function load() {
+      if (!patientId) {
+        setErr("Missing patient id");
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setErr(null);
+      try {
+        // 1) get the patient itself
+        const pRes = await fetch(`${API_BASE}/api/admin/patients/${patientId}`, {
+          cache: "no-store",
+        });
+        const pJson = await pRes.json();
+        if (!pRes.ok || !pJson.ok) {
+          throw new Error(pJson.error || "Failed to load patient");
+        }
+
+        // 2) get appointment history for that patient
+        const aRes = await fetch(
+          `${API_BASE}/api/admin/patients/${patientId}/appointments`,
+          { cache: "no-store" }
+        );
+        const aJson = await aRes.json();
+
+        if (!ignore) {
+          setPatient(pJson.patient);
+          setAppts(aJson.ok ? aJson.items || [] : []);
+        }
+      } catch (e: any) {
+        if (!ignore) setErr(e?.message || "Failed to load patient");
+      } finally {
+        if (!ignore) setLoading(false);
+      }
+    }
+
+    load();
+
+    return () => {
+      ignore = true;
+    };
+  }, [patientId]);
+
+  const handleBack = () => {
+    navigate("/patients");
+  };
+
+  const handleDeletePatient = () => {
+    if (!patientId) return;
+    if (confirm("Are you sure you want to delete this patient?")) {
+      console.log("Delete patient", patientId);
+      // TODO: call DELETE /api/admin/patients/:id if you add it
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-gray-50 py-4 px-4 sm:py-8 sm:px-6 lg:py-12 lg:px-8">
-      <div className="max-w-6xl mx-auto">
-        <div className="bg-white rounded-lg border border-gray-300 shadow-lg">
-          <div className="p-6 sm:p-8">
-            <button
-              onClick={() => navigate(-1)}
-              className="flex items-center gap-2 text-black hover:text-gray-700 transition-colors"
-              aria-label="Back"
-            >
-              <ChevronLeft className="w-4 h-4" />
-              <span className="text-base font-semibold">Back</span>
-            </button>
-          </div>
+    <div className="w-full bg-white rounded-[14px] shadow-[0_4px_15px_1px_rgba(0,0,0,0.08)] overflow-hidden">
+      {/* ─────────── TOP ─────────── */}
+      <div className="px-6 md:px-10 pt-6 md:pt-8 pb-4 md:pb-6 bg-[#F9FAFB]">
+        {/* back */}
+        <button
+          onClick={handleBack}
+          className="flex items-center gap-2 text-black hover:opacity-70 transition mb-8"
+        >
+          <ChevronLeft className="w-4 h-4" />
+          <span className="font-semibold text-base">Back</span>
+        </button>
 
-          <div className="px-6 sm:px-8 pb-8">
-            <div className="flex flex-col lg:flex-row gap-8 lg:gap-12">
-              <div className="flex-shrink-0">
-                <div className="w-32 h-32 sm:w-40 sm:h-40 lg:w-48 lg:h-48 rounded-full bg-[#D9D9D9]" />
-              </div>
-
-              <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-6">
-                <div>
-                  <div className="text-xs font-semibold text-[#BDBDBD] mb-1">Full name</div>
-                  <div className="text-sm sm:text-base text-black">Juan C. Dela Cruz</div>
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-[#BDBDBD] mb-1">Age</div>
-                  <div className="text-sm sm:text-base text-black">45</div>
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-[#BDBDBD] mb-1">Gender</div>
-                  <div className="text-sm sm:text-base text-black">Male</div>
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-[#BDBDBD] mb-1">Email</div>
-                  <div className="text-[11px] sm:text-xs text-black break-all">juandelacruz@gmail.com</div>
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-[#BDBDBD] mb-1">Address</div>
-                  <div className="text-[11px] sm:text-xs text-black">Arellano St., Dagupan City</div>
-                </div>
-                <div>
-                  <div className="text-xs font-semibold text-[#BDBDBD] mb-1">Phone</div>
-                  <div className="text-[11px] sm:text-xs text-black">09123456789</div>
-                </div>
-              </div>
+        {loading ? (
+          <p className="text-sm text-gray-500">Loading…</p>
+        ) : err ? (
+          <p className="text-sm text-red-500">Error: {err}</p>
+        ) : patient ? (
+          <div className="flex flex-col md:flex-row gap-8">
+            {/* circle avatar */}
+            <div className="flex-shrink-0 flex items-center justify-center">
+              <div className="w-[135px] h-[135px] rounded-full bg-[#DDDEE2]" />
             </div>
 
-            <div className="mt-8 flex justify-center lg:justify-start lg:ml-0">
-              <button className="px-6 py-2 bg-[#CF1D1D] hover:bg-[#B01818] text-white text-xs font-semibold rounded-lg transition-colors shadow-sm">
-                Delete patient
-              </button>
-            </div>
-          </div>
+            {/* info grid */}
+            <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-10 gap-y-5">
+              <div>
+                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Full name</p>
+                <p className="text-[15px] font-semibold text-[#151515] leading-tight">
+                  {patient.name}
+                </p>
+              </div>
 
-          <div className="bg-white rounded-b-lg shadow-md">
-            <div className="px-6 sm:px-8 pt-6 pb-4">
-              <div className="inline-flex bg-[#EFEFEF] rounded-md p-1">
+              <div>
+                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Age</p>
+                <p className="text-[15px] font-semibold text-[#151515]">
+                  {patient.age ?? "—"}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Gender</p>
+                <p className="text-[15px] font-semibold text-[#151515]">
+                  {patient.gender ?? "—"}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Email</p>
+                <p className="text-[11px] font-semibold text-[#151515] break-all">
+                  {patient.email ?? "—"}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Address</p>
+                <p className="text-[11px] font-semibold text-[#151515]">
+                  {patient.address ?? "—"}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Phone</p>
+                <p className="text-[11px] font-semibold text-[#151515]">
+                  {patient.phone ?? "—"}
+                </p>
+              </div>
+
+              {/* delete button full width */}
+              <div className="sm:col-span-2 lg:col-span-3">
                 <button
-                  onClick={() => setActiveTab("active")}
-                  className={`px-4 py-2 text-xs font-semibold rounded transition-colors ${
-                    activeTab === "active" ? "bg-white text-[#30B8DE] shadow-sm" : "text-[#BDBDBD] hover:text-gray-600"
-                  }`}
+                  onClick={handleDeletePatient}
+                  className="mt-1 inline-flex items-center justify-center px-6 py-2 bg-[#DC3E3E] text-white text-[11px] font-semibold rounded-lg hover:bg-red-600 transition"
                 >
-                  Active Appointment
-                </button>
-                <button
-                  onClick={() => setActiveTab("history")}
-                  className={`px-4 py-2 text-xs font-semibold rounded transition-colors ${
-                    activeTab === "history" ? "bg-white text-[#30B8DE] shadow-sm" : "text-[#BDBDBD] hover:text-gray-600"
-                  }`}
-                >
-                  Appointment History
+                  Delete patient
                 </button>
               </div>
             </div>
+          </div>
+        ) : null}
+      </div>
 
-            <div className="px-6 sm:px-8 pb-8">
-              <div className="bg-[#EFEFEF] rounded-md p-4 sm:p-6">
-                {activeTab === "active" ? (
-                  <div className="bg-white rounded-lg p-6 sm:p-8">
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-0">
-                      <div className="md:pr-8 md:border-r md:border-[#BDBDBD]">
-                        <div className="text-xl sm:text-2xl font-bold text-black mb-1">October 30, 2025</div>
-                        <div className="text-sm sm:text-base text-[#BDBDBD]">9AM</div>
-                      </div>
-                      <div className="md:px-8 md:border-r md:border-[#BDBDBD]">
-                        <div className="text-xs sm:text-sm font-semibold text-[#BDBDBD] mb-1">Procedure</div>
-                        <div className="text-lg sm:text-xl text-black">Cleaning</div>
-                      </div>
-                      <div className="md:pl-8">
-                        <div className="text-xs sm:text-sm font-semibold text-[#BDBDBD] mb-1">Dentist</div>
-                        <div className="text-lg sm:text-xl text-black">Dr. Ismael Junio</div>
-                      </div>
-                    </div>
-                  </div>
+      {/* ─────────── DIVIDER (keep) ─────────── */}
+      <div className="h-[1px] bg-[#E7E7E7]" />
+
+      {/* ─────────── BOTTOM ─────────── */}
+      <div className="bg-[#F7F7F7] pt-8 pb-10 px-6 md:px-10">
+        {/* little pill */}
+        <div className="inline-flex bg-[#ECEFF1] rounded-[11px] px-5 py-2 mb-5">
+          <span className="text-[13px] font-semibold text-[#1DB5DB]">
+            Appointment History
+          </span>
+        </div>
+
+        <div className="bg-white rounded-[12px] shadow-[0_4px_8px_rgba(0,0,0,0.02)] overflow-hidden border border-[#E5E5E5]">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="bg-[#23BDE1] text-white">
+                  <th className="text-left px-6 py-3 text-sm font-semibold">Procedure</th>
+                  <th className="text-left px-6 py-3 text-sm font-semibold">Date</th>
+                  <th className="text-left px-6 py-3 text-sm font-semibold">Dentist</th>
+                </tr>
+              </thead>
+              <tbody>
+                {appts.length > 0 ? (
+                  appts.map((item) => (
+                    <tr
+                      key={item.id}
+                      className="border-t border-[#E5E5E5] hover:bg-[#F9FAFB] transition"
+                    >
+                      <td className="px-6 py-4 text-sm text-[#151515]">
+                        {item.procedure || "—"}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-[#151515]">
+                        {item.date || "—"}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-[#151515]">
+                        {item.dentist || "—"}
+                      </td>
+                    </tr>
+                  ))
                 ) : (
-                  <div className="bg-white rounded-lg p-8 text-center">
-                    <div className="text-[#BDBDBD]">No appointment history</div>
-                  </div>
+                  <tr>
+                    <td colSpan={3} className="px-6 py-6 text-center text-sm text-gray-500">
+                      No appointment history.
+                    </td>
+                  </tr>
                 )}
-              </div>
-              <p className="mt-4 text-xs text-gray-400">Patient ID: {id}</p>
-            </div>
+              </tbody>
+            </table>
           </div>
+          <div className="hidden md:block h-4 bg-transparent" />
         </div>
       </div>
     </div>

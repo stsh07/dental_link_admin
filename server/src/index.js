@@ -17,7 +17,7 @@ const DEFAULT_ORIGINS = [
 // Allow comma-separated overrides in env, e.g. CORS_ORIGIN=http://foo:8080,http://bar:3001
 const extra = (process.env.CORS_ORIGIN || "")
   .split(",")
-  .map(s => s.trim())
+  .map((s) => s.trim())
   .filter(Boolean);
 
 const ALLOWED_ORIGINS = Array.from(new Set([...DEFAULT_ORIGINS, ...extra]));
@@ -55,9 +55,14 @@ const resetAdminRouter = require("./routes/reset-admin");
 const appointmentsRouter = require("./routes/appointments");
 const doctorsRouter = require("./routes/doctors");
 const reviewsRouter = require("./routes/reviews");
+const adminPatientsRouter = require("./routes/adminPatients"); // 👈 ADD THIS
 
 app.use("/api/auth", authRouter);
 app.use("/api/reset-admin", resetAdminRouter);
+
+// 👇 mount BEFORE the generic /api router (not strictly required, but cleaner)
+app.use("/api/admin/patients", adminPatientsRouter);
+
 app.use("/api", appointmentsRouter);
 app.use("/api/doctors", doctorsRouter);
 app.use("/api", reviewsRouter);
@@ -76,7 +81,11 @@ const PORT = Number(process.env.PORT || 4002);
 app.listen(PORT, async () => {
   console.log(`API running at http://localhost:${PORT}`);
   console.log("CORS allowed origins:", ALLOWED_ORIGINS);
-  try { await ping(); console.log("[db] connection OK"); }
-  catch (e) { console.error("[db] ping failed:", e.message || e); }
+  try {
+    await ping();
+    console.log("[db] connection OK");
+  } catch (e) {
+    console.error("[db] ping failed:", e.message || e);
+  }
   setupGracefulShutdown();
 });
