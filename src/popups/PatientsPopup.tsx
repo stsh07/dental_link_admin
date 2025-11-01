@@ -1,11 +1,9 @@
-// src/popups/PatientsPopup.tsx
 import { useEffect, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import DeletePatient from "./deletePatient";
 
-type PatientsPopupProps = {
-  patientId?: number;
-};
+type PatientsPopupProps = { patientId?: number };
 
 type Patient = {
   id: number;
@@ -39,7 +37,10 @@ export default function PatientsPopup({ patientId }: PatientsPopupProps) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // 🔁 fetch real data
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
+
   useEffect(() => {
     let ignore = false;
 
@@ -49,24 +50,14 @@ export default function PatientsPopup({ patientId }: PatientsPopupProps) {
         setLoading(false);
         return;
       }
-
       setLoading(true);
       setErr(null);
       try {
-        // 1) get the patient itself
-        const pRes = await fetch(`${API_BASE}/api/admin/patients/${patientId}`, {
-          cache: "no-store",
-        });
+        const pRes = await fetch(`${API_BASE}/api/admin/patients/${patientId}`, { cache: "no-store" });
         const pJson = await pRes.json();
-        if (!pRes.ok || !pJson.ok) {
-          throw new Error(pJson.error || "Failed to load patient");
-        }
+        if (!pRes.ok || !pJson.ok) throw new Error(pJson.error || "Failed to load patient");
 
-        // 2) get appointment history for that patient
-        const aRes = await fetch(
-          `${API_BASE}/api/admin/patients/${patientId}/appointments`,
-          { cache: "no-store" }
-        );
+        const aRes = await fetch(`${API_BASE}/api/admin/patients/${patientId}/appointments`, { cache: "no-store" });
         const aJson = await aRes.json();
 
         if (!ignore) {
@@ -81,33 +72,50 @@ export default function PatientsPopup({ patientId }: PatientsPopupProps) {
     }
 
     load();
-
-    return () => {
-      ignore = true;
-    };
+    return () => { ignore = true; };
   }, [patientId]);
 
-  const handleBack = () => {
-    navigate("/patients");
+  const handleBack = () => navigate("/patients");
+
+  const handleDeleteClick = () => {
+    setDeleteErr(null);
+    setConfirmOpen(true);
   };
 
-  const handleDeletePatient = () => {
+  const handleConfirmDelete = async () => {
     if (!patientId) return;
-    if (confirm("Are you sure you want to delete this patient?")) {
-      console.log("Delete patient", patientId);
-      // TODO: call DELETE /api/admin/patients/:id if you add it
+    try {
+      setDeleting(true);
+      setDeleteErr(null);
+      const res = await fetch(`${API_BASE}/api/admin/patients/${patientId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.ok === false) {
+        throw new Error(json?.error || `Delete failed (HTTP ${res.status})`);
+      }
+      window.dispatchEvent(new Event("patients-updated"));
+      setConfirmOpen(false);
+      navigate("/patients");
+    } catch (e: any) {
+      setDeleteErr(e?.message || "Failed to delete patient");
+    } finally {
+      setDeleting(false);
     }
   };
 
+  const handleCancelDelete = () => {
+    if (deleting) return;
+    setConfirmOpen(false);
+  };
+
   return (
-    <div className="w-full bg-white rounded-[14px] shadow-[0_4px_15px_1px_rgba(0,0,0,0.08)] overflow-hidden">
-      {/* ─────────── TOP ─────────── */}
-      <div className="px-6 md:px-10 pt-6 md:pt-8 pb-4 md:pb-6 bg-[#F9FAFB]">
-        {/* back */}
-        <button
-          onClick={handleBack}
-          className="flex items-center gap-2 text-black hover:opacity-70 transition mb-8"
-        >
+    <div className="w-full bg-white rounded-[14px] shadow-[0_4px_15px_1px_rgba(0,0,0,0.08)] overflow-hidden relative">
+      {/* top */}
+      <div className="px-6 md:px-10 pt-6 md:pt-8 pb-4 md:pb-6 bg-white">
+        <button onClick={handleBack} className="flex items-center gap-2 text-black hover:opacity-70 transition mb-8">
           <ChevronLeft className="w-4 h-4" />
           <span className="font-semibold text-base">Back</span>
         </button>
@@ -118,62 +126,46 @@ export default function PatientsPopup({ patientId }: PatientsPopupProps) {
           <p className="text-sm text-red-500">Error: {err}</p>
         ) : patient ? (
           <div className="flex flex-col md:flex-row gap-8">
-            {/* circle avatar */}
             <div className="flex-shrink-0 flex items-center justify-center">
-              <div className="w-[135px] h-[135px] rounded-full bg-[#DDDEE2]" />
+              <div className="w-[135px] h-[135px] rounded-full bg-white border border-[#DDDEE2]" />
             </div>
 
-            {/* info grid */}
             <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-10 gap-y-5">
               <div>
-                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Full name</p>
-                <p className="text-[15px] font-semibold text-[#151515] leading-tight">
-                  {patient.name}
-                </p>
+                <p className="text-[11px] font-semibold text-[#6B7280] mb-1">Full name</p>
+                <p className="text-[15px] font-semibold text-[#151515] leading-tight">{patient.name}</p>
               </div>
-
               <div>
-                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Age</p>
-                <p className="text-[15px] font-semibold text-[#151515]">
-                  {patient.age ?? "—"}
-                </p>
+                <p className="text-[11px] font-semibold text-[#6B7280] mb-1">Age</p>
+                <p className="text-[15px] font-semibold text-[#151515]">{patient.age ?? "—"}</p>
               </div>
-
               <div>
-                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Gender</p>
-                <p className="text-[15px] font-semibold text-[#151515]">
-                  {patient.gender ?? "—"}
-                </p>
+                <p className="text-[11px] font-semibold text-[#6B7280] mb-1">Gender</p>
+                <p className="text-[15px] font-semibold text-[#151515]">{patient.gender ?? "—"}</p>
               </div>
-
               <div>
-                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Email</p>
-                <p className="text-[11px] font-semibold text-[#151515] break-all">
-                  {patient.email ?? "—"}
-                </p>
+                <p className="text-[11px] font-semibold text-[#6B7280] mb-1">Email</p>
+                <p className="text-[11px] font-semibold text-[#151515] break-all">{patient.email ?? "—"}</p>
               </div>
-
               <div>
-                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Address</p>
-                <p className="text-[11px] font-semibold text-[#151515]">
-                  {patient.address ?? "—"}
-                </p>
+                <p className="text-[11px] font-semibold text-[#6B7280] mb-1">Address</p>
+                <p className="text-[11px] font-semibold text-[#151515]">{patient.address ?? "—"}</p>
               </div>
-
               <div>
-                <p className="text-[11px] font-semibold text-[#4B4B4B] mb-1">Phone</p>
-                <p className="text-[11px] font-semibold text-[#151515]">
-                  {patient.phone ?? "—"}
-                </p>
+                <p className="text-[11px] font-semibold text-[#6B7280] mb-1">Phone</p>
+                <p className="text-[11px] font-semibold text-[#151515]">{patient.phone ?? "—"}</p>
               </div>
 
-              {/* delete button full width */}
               <div className="sm:col-span-2 lg:col-span-3">
+                {deleteErr && (
+                  <div className="mb-2 text-[12px] text-red-600 font-medium">Delete error: {deleteErr}</div>
+                )}
                 <button
-                  onClick={handleDeletePatient}
-                  className="mt-1 inline-flex items-center justify-center px-6 py-2 bg-[#DC3E3E] text-white text-[11px] font-semibold rounded-lg hover:bg-red-600 transition"
+                  onClick={handleDeleteClick}
+                  className="mt-1 inline-flex items-center justify-center px-6 py-2 bg-[#DC3E3E] text-white text-[11px] font-semibold rounded-lg hover:bg-red-600 transition disabled:opacity-60"
+                  disabled={deleting}
                 >
-                  Delete patient
+                  {deleting ? "Deleting…" : "Delete patient"}
                 </button>
               </div>
             </div>
@@ -181,51 +173,36 @@ export default function PatientsPopup({ patientId }: PatientsPopupProps) {
         ) : null}
       </div>
 
-      {/* ─────────── DIVIDER (keep) ─────────── */}
       <div className="h-[1px] bg-[#E7E7E7]" />
 
-      {/* ─────────── BOTTOM ─────────── */}
-      <div className="bg-[#F7F7F7] pt-8 pb-10 px-6 md:px-10">
-        {/* little pill */}
-        <div className="inline-flex bg-[#ECEFF1] rounded-[11px] px-5 py-2 mb-5">
-          <span className="text-[13px] font-semibold text-[#1DB5DB]">
-            Appointment History
-          </span>
+      {/* bottom */}
+      <div className="bg-white pt-8 pb-10 px-6 md:px-10">
+        <div className="inline-flex rounded-[11px] px-0 py-0 mb-5">
+          <span className="text-[13px] font-semibold text-[#111827]">Appointment History</span>
         </div>
 
         <div className="bg-white rounded-[12px] shadow-[0_4px_8px_rgba(0,0,0,0.02)] overflow-hidden border border-[#E5E5E5]">
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
-                <tr className="bg-[#23BDE1] text-white">
-                  <th className="text-left px-6 py-3 text-sm font-semibold">Procedure</th>
-                  <th className="text-left px-6 py-3 text-sm font-semibold">Date</th>
-                  <th className="text-left px-6 py-3 text-sm font-semibold">Dentist</th>
+                <tr className="bg-[#30B8DE]">
+                  <th className="text-left px-6 py-3 text-sm font-semibold text-white border-b border-[#E5E5E5]">Procedure</th>
+                  <th className="text-left px-6 py-3 text-sm font-semibold text-white border-b border-[#E5E5E5]">Date</th>
+                  <th className="text-left px-6 py-3 text-sm font-semibold text-white border-b border-[#E5E5E5]">Dentist</th>
                 </tr>
               </thead>
               <tbody>
                 {appts.length > 0 ? (
                   appts.map((item) => (
-                    <tr
-                      key={item.id}
-                      className="border-t border-[#E5E5E5] hover:bg-[#F9FAFB] transition"
-                    >
-                      <td className="px-6 py-4 text-sm text-[#151515]">
-                        {item.procedure || "—"}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-[#151515]">
-                        {item.date || "—"}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-[#151515]">
-                        {item.dentist || "—"}
-                      </td>
+                    <tr key={item.id} className="hover:bg-[#F9FAFB] transition">
+                      <td className="px-6 py-4 text-sm text-[#151515] border-b border-[#E5E5E5]">{item.procedure || "—"}</td>
+                      <td className="px-6 py-4 text-sm text-[#151515] border-b border-[#E5E5E5]">{item.date || "—"}</td>
+                      <td className="px-6 py-4 text-sm text-[#151515] border-b border-[#E5E5E5]">{item.dentist || "—"}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={3} className="px-6 py-6 text-center text-sm text-gray-500">
-                      No appointment history.
-                    </td>
+                    <td colSpan={3} className="px-6 py-6 text-center text-sm text-gray-500">No appointment history.</td>
                   </tr>
                 )}
               </tbody>
@@ -234,6 +211,17 @@ export default function PatientsPopup({ patientId }: PatientsPopupProps) {
           <div className="hidden md:block h-4 bg-transparent" />
         </div>
       </div>
+
+      {/* modal */}
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <DeletePatient
+            onCancel={handleCancelDelete}
+            onConfirm={handleConfirmDelete}
+            loading={deleting}
+          />
+        </div>
+      )}
     </div>
   );
 }
