@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import DocApptTable from "../popups/DocApptTable";
 import ReviewPopup from "../popups/reviewspopup";
+import DeleteDoctor from "../popups/deleteDoctor";
 
 function joinUrl(base: string, path: string) {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
@@ -68,11 +69,7 @@ const fmtDatePretty = (ymd: string) => {
   if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
     const [y, m, d] = ymd.split("-").map(Number);
     const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
-    return dt.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "long",
-      day: "2-digit",
-    });
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "2-digit" });
   }
   return String(ymd);
 };
@@ -111,39 +108,20 @@ function pickFirst<T = any>(obj: any, names: string[], fallback: T): T {
 }
 
 function normalizeAppt(a: any): NormalizedAppt {
-  const patient = pickFirst<string>(
-    a,
-    ["patient_name", "patientName", "patient", "full_name"],
-    ""
-  );
+  const patient = pickFirst<string>(a, ["patient_name", "patientName", "patient", "full_name"], "");
   const procedure = pickFirst<string>(a, ["service", "procedure"], "");
-  const dateRaw = pickFirst<string>(
-    a,
-    ["date", "appointment_date", "preferredDate"],
-    ""
-  );
-  const timeRaw = pickFirst<string>(
-    a,
-    ["time_start", "timeStart", "preferredTime", "time"],
-    ""
-  );
+  const dateRaw = pickFirst<string>(a, ["date", "appointment_date", "preferredDate"], "");
+  const timeRaw = pickFirst<string>(a, ["time_start", "timeStart", "preferredTime", "time"], "");
   const status = String(pickFirst<string>(a, ["status"], "")).toUpperCase();
 
-  const apptIdRaw = pickFirst<string | number>(
-    a,
-    ["appointment_id", "appointmentId", "id"],
-    0
-  );
+  const apptIdRaw = pickFirst<string | number>(a, ["appointment_id", "appointmentId", "id"], 0);
   const apptIdNum = Number(apptIdRaw) || null;
 
   let time = "";
   if (/^\d{1,2}:\d{2}$/.test(String(timeRaw))) {
     const [sh, sm] = String(timeRaw).split(":").map((n) => Number(n || 0));
     const start12 = to12h(sh, sm);
-    const endHM = addMinutes(
-      `${String(sh).padStart(2, "0")}:${String(sm).padStart(2, "0")}`,
-      120
-    );
+    const endHM = addMinutes(`${String(sh).padStart(2, "0")}:${String(sm).padStart(2, "0")}`, 120);
     const [eh, em] = endHM.split(":").map((n) => Number(n || 0));
     const end12 = to12h(eh, em);
     time = `${start12} – ${end12}`;
@@ -174,15 +152,16 @@ export default function DoctorProfile() {
   const [tab, setTab] = useState<"active" | "history">("active");
   const [activeRows, setActiveRows] = useState<ActiveRow[]>([]);
   const [historyRows, setHistoryRows] = useState<HistoryRow[]>([]);
-
   const [statusSaving, setStatusSaving] = useState(false);
 
-  // popup state
+  // reviews modal
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
-  const [selectedReview, setSelectedReview] = useState<{
-    patient: string;
-    review: string;
-  } | null>(null);
+  const [selectedReview, setSelectedReview] = useState<{ patient: string; review: string } | null>(null);
+
+  // delete-confirm modal
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -197,50 +176,29 @@ export default function DoctorProfile() {
         setLoading(true);
         setErr(null);
 
-        const res = await fetch(joinUrl(API_BASE, `/api/doctors/${id}`), {
-          cache: "no-store",
-        });
+        const res = await fetch(joinUrl(API_BASE, `/api/doctors/${id}`), { cache: "no-store" });
         const json = await res.json();
         if (!res.ok || !json.ok) throw new Error(json.error || "Load failed");
         if (mounted) setDoctor(json.doctor);
 
         const [respA, respH, respR] = await Promise.all([
-          fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=active`), {
-            cache: "no-store",
-          }),
-          fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=history`), {
-            cache: "no-store",
-          }),
-          fetch(joinUrl(API_BASE, `/api/reviews/by-dentist/${id}`), {
-            cache: "no-store",
-          }),
+          fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=active`), { cache: "no-store" }),
+          fetch(joinUrl(API_BASE, `/api/doctors/${id}/appointments?scope=history`), { cache: "no-store" }),
+          fetch(joinUrl(API_BASE, `/api/reviews/by-dentist/${id}`), { cache: "no-store" }),
         ]);
 
-        const [jsonA, jsonH, jsonR] = await Promise.all([
-          respA.json(),
-          respH.json(),
-          respR.json(),
-        ]);
+        const [jsonA, jsonH, jsonR] = await Promise.all([respA.json(), respH.json(), respR.json()]);
 
-        if (!respA.ok || !jsonA.ok)
-          throw new Error(jsonA?.error || "Load appointments failed");
-        if (!respH.ok || !jsonH.ok)
-          throw new Error(jsonH?.error || "Load appointments failed");
-        if (!respR.ok || !jsonR.ok)
-          throw new Error(jsonR?.error || "Load dentist reviews failed");
+        if (!respA.ok || !jsonA.ok) throw new Error(jsonA?.error || "Load appointments failed");
+        if (!respH.ok || !jsonH.ok) throw new Error(jsonH?.error || "Load appointments failed");
+        if (!respR.ok || !jsonR.ok) throw new Error(jsonR?.error || "Load dentist reviews failed");
 
-        const normActive: NormalizedAppt[] = (jsonA.items || []).map((a: any) =>
-          normalizeAppt(a)
-        );
-        const normHistory: NormalizedAppt[] = (jsonH.items || []).map((a: any) =>
-          normalizeAppt(a)
-        );
+        const normActive: NormalizedAppt[] = (jsonA.items || []).map((a: any) => normalizeAppt(a));
+        const normHistory: NormalizedAppt[] = (jsonH.items || []).map((a: any) => normalizeAppt(a));
 
         const reviewMap: Record<number, string> = {};
         (jsonR.reviews || []).forEach((r: DentistReview) => {
-          if (r.appointmentId) {
-            reviewMap[r.appointmentId] = r.reviewText;
-          }
+          if (r.appointmentId) reviewMap[r.appointmentId] = r.reviewText;
         });
 
         const activeOnly: ActiveRow[] = normActive
@@ -283,20 +241,31 @@ export default function DoctorProfile() {
     };
   }, [id]);
 
-  const deleteDoctor = async () => {
+  const openDeleteModal = () => {
+    setDeleteErr(null);
+    setConfirmOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
     if (!doctor) return;
-    if (!confirm("Delete this doctor? This will remove them from the doctors list.")) return;
     try {
-      const res = await fetch(joinUrl(API_BASE, `/api/doctors/${doctor.id}`), {
-        method: "DELETE",
-      });
+      setDeleting(true);
+      setDeleteErr(null);
+      const res = await fetch(joinUrl(API_BASE, `/api/doctors/${doctor.id}`), { method: "DELETE" });
       const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.ok) throw new Error(j.error || "Delete failed");
+      if (!res.ok || !j.ok) throw new Error(j.error || `Delete failed (HTTP ${res.status})`);
       window.dispatchEvent(new Event("doctors-updated"));
+      setConfirmOpen(false);
       navigate("/doctors");
     } catch (e: any) {
-      alert(e.message || "Failed to delete");
+      setDeleteErr(e?.message || "Failed to delete");
+    } finally {
+      setDeleting(false);
     }
+  };
+
+  const handleCancelDelete = () => {
+    if (!deleting) setConfirmOpen(false);
   };
 
   const photo = useMemo(() => buildPhotoUrl(doctor?.profile_url), [doctor?.profile_url]);
@@ -308,10 +277,7 @@ export default function DoctorProfile() {
     time?: string;
     procedure?: string;
   }) => {
-    setSelectedReview({
-      patient: payload.patient,
-      review: payload.review,
-    });
+    setSelectedReview({ patient: payload.patient, review: payload.review });
     setReviewModalOpen(true);
   };
 
@@ -331,13 +297,7 @@ export default function DoctorProfile() {
               onClick={() => navigate(-1)}
               className="flex items-center gap-2 mb-6 sm:mb-8 hover:opacity-70 transition-opacity"
             >
-              <svg
-                width="8"
-                height="14"
-                viewBox="0 0 8 14"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
+              <svg width="8" height="14" viewBox="0 0 8 14" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <path
                   d="M7.99888 1.1417L6.81983 8.35263e-05L0.332443 6.15361C0.227873 6.25221 0.144677 6.36968 0.0876438 6.49925C0.0306108 6.62882 0.000866405 6.76794 0.000122491 6.9086C-0.000621422 7.04926 0.0276498 7.18869 0.0833092 7.31885C0.138969 7.44902 0.220917 7.56736 0.324439 7.66706L6.74636 13.8921L7.9363 12.763L1.90887 6.9203L7.99888 1.1417Z"
                   fill="black"
@@ -377,58 +337,42 @@ export default function DoctorProfile() {
                   <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-4 sm:gap-y-6">
                     <div>
                       <div className="text-xs font-semibold text-gray-500 mb-1">Full name</div>
-                      <div className="text-sm sm:text-[15px] font-semibold text-gray-900">
-                        {doctor.full_name}
-                      </div>
+                      <div className="text-sm sm:text-[15px] font-semibold text-gray-900">{doctor.full_name}</div>
                     </div>
 
                     <div>
                       <div className="text-xs font-semibold text-gray-500 mb-1">Age</div>
-                      <div className="text-sm sm:text-[15px] font-semibold text-gray-900">
-                        {doctor.age ?? "—"}
-                      </div>
+                      <div className="text-sm sm:text-[15px] font-semibold text-gray-900">{doctor.age ?? "—"}</div>
                     </div>
 
                     <div>
                       <div className="text-xs font-semibold text-gray-500 mb-1">Gender</div>
-                      <div className="text-sm sm:text-[15px] font-semibold text-gray-900">
-                        {doctor.gender ?? "—"}
-                      </div>
+                      <div className="text-sm sm:text-[15px] font-semibold text-gray-900">{doctor.gender ?? "—"}</div>
                     </div>
 
                     <div>
                       <div className="text-xs font-semibold text-gray-500 mb-1">Email</div>
-                      <div className="text-[11px] font-semibold text-gray-900 break-all">
-                        {doctor.email ?? "—"}
-                      </div>
+                      <div className="text-[11px] font-semibold text-gray-900 break-all">{doctor.email ?? "—"}</div>
                     </div>
 
                     <div>
                       <div className="text-xs font-semibold text-gray-500 mb-1">Address</div>
-                      <div className="text-[11px] font-semibold text-gray-900">
-                        {doctor.address ?? "—"}
-                      </div>
+                      <div className="text-[11px] font-semibold text-gray-900">{doctor.address ?? "—"}</div>
                     </div>
 
                     <div>
                       <div className="text-xs font-semibold text-gray-500 mb-1">Phone</div>
-                      <div className="text-[11px] font-semibold text-gray-900">
-                        {doctor.phone ?? "—"}
-                      </div>
+                      <div className="text-[11px] font-semibold text-gray-900">{doctor.phone ?? "—"}</div>
                     </div>
 
                     <div className="sm:col-span-2 lg:col-span-3">
                       <div className="text-xs font-semibold text-gray-500 mb-1">Position</div>
-                      <div className="text-[11px] font-semibold text-gray-900">
-                        {doctor.position ?? "—"}
-                      </div>
+                      <div className="text-[11px] font-semibold text-gray-900">{doctor.position ?? "—"}</div>
                     </div>
 
                     <div className="sm:col-span-2 lg:col-span-3">
                       <div className="flex flex-col gap-2 text-sm">
-                        <span className="font-semibold text-gray-900">
-                          {doctor.work_time || "08:00 – 17:00"}
-                        </span>
+                        <span className="font-semibold text-gray-900">{doctor.work_time || "08:00 – 17:00"}</span>
 
                         <div className="relative">
                           <details className="group inline-block">
@@ -467,9 +411,7 @@ export default function DoctorProfile() {
                                   key={opt}
                                   onClick={async (e) => {
                                     e.preventDefault();
-                                    (e.currentTarget.closest("details") as HTMLDetailsElement)?.removeAttribute(
-                                      "open"
-                                    );
+                                    (e.currentTarget.closest("details") as HTMLDetailsElement)?.removeAttribute("open");
 
                                     setStatusSaving(true);
                                     try {
@@ -504,11 +446,15 @@ export default function DoctorProfile() {
                     </div>
 
                     <div className="sm:col-span-2 lg:col-span-3">
+                      {deleteErr && (
+                        <div className="mb-2 text-[12px] text-red-600 font-medium">Delete error: {deleteErr}</div>
+                      )}
                       <button
-                        onClick={deleteDoctor}
-                        className="px-6 py-2 bg-red-600 text-white text-[11px] font-semibold rounded-lg hover:bg-red-700 transition-colors"
+                        onClick={openDeleteModal}
+                        className="px-6 py-2 bg-red-600 text-white text-[11px] font-semibold rounded-lg hover:bg-red-700 transition-colors disabled:opacity-60"
+                        disabled={deleting}
                       >
-                        Delete doctor
+                        {deleting ? "Deleting…" : "Delete doctor"}
                       </button>
                     </div>
                   </div>
@@ -554,6 +500,12 @@ export default function DoctorProfile() {
           patient={selectedReview.patient}
           review={selectedReview.review}
         />
+      )}
+
+      {confirmOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <DeleteDoctor onCancel={handleCancelDelete} onConfirm={handleConfirmDelete} loading={deleting} />
+        </div>
       )}
     </div>
   );

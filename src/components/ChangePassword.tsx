@@ -1,4 +1,3 @@
-// src/components/ChangePassword.tsx
 import React, { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import Sidebar from "./Sidebar";
@@ -7,7 +6,6 @@ const API_BASE =
   (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/+$/, "") ||
   "http://localhost:4002";
 
-// 👇 change this if you store user under another key
 const LOCAL_STORAGE_KEY = "dental-link-user";
 
 const ChangePassword = (): JSX.Element => {
