@@ -7,7 +7,6 @@ const { ping, setupGracefulShutdown } = require("./db");
 
 const app = express();
 
-/* ---------- CORS (hardened) ---------- */
 const DEFAULT_ORIGINS = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
@@ -18,7 +17,6 @@ const extra = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-
 const ALLOWED_ORIGINS = Array.from(new Set([...DEFAULT_ORIGINS, ...extra]));
 
 const corsConfig = {
@@ -36,24 +34,21 @@ const corsConfig = {
 app.use(cors(corsConfig));
 app.options("*", cors(corsConfig));
 
-/* ---------- Body parsing ---------- */
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-/* ---------- Static uploads ---------- */
 app.use("/uploads", express.static(path.join(__dirname, "..", "uploads")));
 
-/* ---------- Health ---------- */
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-/* ---------- Routers ---------- */
 const authRouter = require("./routes/auth");
 const resetAdminRouter = require("./routes/reset-admin");
 const appointmentsRouter = require("./routes/appointments");
 const doctorsRouter = require("./routes/doctors");
 const reviewsRouter = require("./routes/reviews");
 const adminPatientsRouter = require("./routes/adminPatients");
-const changePasswordRouter = require("./routes/change-password"); // 👈 NEW
+const changePasswordRouter = require("./routes/change-password");
+const servicesRouter = require("./routes/services");
 
 app.use("/api/auth", authRouter);
 app.use("/api/reset-admin", resetAdminRouter);
@@ -61,19 +56,18 @@ app.use("/api/admin/patients", adminPatientsRouter);
 app.use("/api", appointmentsRouter);
 app.use("/api/doctors", doctorsRouter);
 app.use("/api", reviewsRouter);
-app.use("/api/change-password", changePasswordRouter); // 👈 MOUNT
+app.use("/api/change-password", changePasswordRouter);
+app.use("/api/services", servicesRouter);
 
-/* ---------- 404 ---------- */
 app.use((req, res) => res.status(404).json({ ok: false, error: "NOT_FOUND" }));
 
-/* ---------- Error handler ---------- */
 app.use((err, _req, res, _next) => {
   console.error("[API ERROR]", err?.message || err);
   res.status(500).json({ ok: false, error: "Internal server error" });
 });
 
-/* ---------- Start ---------- */
 const PORT = Number(process.env.PORT || 4002);
+
 app.listen(PORT, async () => {
   console.log(`API running at http://localhost:${PORT}`);
   console.log("CORS allowed origins:", ALLOWED_ORIGINS);
@@ -83,5 +77,15 @@ app.listen(PORT, async () => {
   } catch (e) {
     console.error("[db] ping failed:", e.message || e);
   }
+
+  if (typeof servicesRouter.upsertDefaultServices === "function") {
+    try {
+      await servicesRouter.upsertDefaultServices();
+      console.log("[services] default services synced");
+    } catch (e) {
+      console.error("[services] sync failed:", e.message || e);
+    }
+  }
+
   setupGracefulShutdown();
 });
