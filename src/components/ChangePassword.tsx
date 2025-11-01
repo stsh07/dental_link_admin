@@ -1,6 +1,14 @@
+// src/components/ChangePassword.tsx
 import React, { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import Sidebar from "./Sidebar";
+
+const API_BASE =
+  (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/+$/, "") ||
+  "http://localhost:4002";
+
+// 👇 change this if you store user under another key
+const LOCAL_STORAGE_KEY = "dental-link-user";
 
 const ChangePassword = (): JSX.Element => {
   const [oldPassword, setOldPassword] = useState("");
@@ -10,9 +18,58 @@ const ChangePassword = (): JSX.Element => {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showRetypePassword, setShowRetypePassword] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [loading, setLoading] = useState(false);
+  const [serverError, setServerError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Password changed:", { oldPassword, newPassword, retypePassword });
+    setServerError("");
+    setSuccess("");
+
+    if (newPassword !== retypePassword) {
+      setServerError("New password and re-typed password do not match.");
+      return;
+    }
+
+    // get current user from localStorage
+    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
+    const user = raw ? JSON.parse(raw) : null;
+    const email: string | undefined = user?.email;
+
+    if (!email) {
+      setServerError("Cannot find your account. Please re-login.");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      const res = await fetch(`${API_BASE}/api/change-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          email,
+          oldPassword,
+          newPassword,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setServerError(data.message || data.error || "Failed to change password.");
+        return;
+      }
+
+      setSuccess("Password has been updated.");
+      setOldPassword("");
+      setNewPassword("");
+      setRetypePassword("");
+    } catch (err: any) {
+      setServerError(err?.message || "Network error.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -32,10 +89,7 @@ const ChangePassword = (): JSX.Element => {
           <form onSubmit={handleSubmit} className="space-y-6">
             {/* Old Password */}
             <div>
-              <label
-                htmlFor="oldPassword"
-                className="block text-sm text-gray-800 mb-2"
-              >
+              <label htmlFor="oldPassword" className="block text-sm text-gray-800 mb-2">
                 Old password
               </label>
               <div className="relative">
@@ -45,6 +99,7 @@ const ChangePassword = (): JSX.Element => {
                   value={oldPassword}
                   onChange={(e) => setOldPassword(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-transparent"
+                  required
                 />
                 <button
                   type="button"
@@ -56,21 +111,13 @@ const ChangePassword = (): JSX.Element => {
                 </button>
               </div>
               <div className="text-right mt-1">
-                <a
-                  href="#"
-                  className="text-sm text-gray-400 hover:text-gray-600"
-                >
-                  Forgot password?
-                </a>
+                <span className="text-sm text-gray-400">Forgot password?</span>
               </div>
             </div>
 
             {/* New Password */}
             <div>
-              <label
-                htmlFor="newPassword"
-                className="block text-sm text-gray-800 mb-2"
-              >
+              <label htmlFor="newPassword" className="block text-sm text-gray-800 mb-2">
                 New password
               </label>
               <div className="relative">
@@ -80,6 +127,7 @@ const ChangePassword = (): JSX.Element => {
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-transparent"
+                  required
                 />
                 <button
                   type="button"
@@ -94,10 +142,7 @@ const ChangePassword = (): JSX.Element => {
 
             {/* Re-type Password */}
             <div>
-              <label
-                htmlFor="retypePassword"
-                className="block text-sm text-gray-800 mb-2"
-              >
+              <label htmlFor="retypePassword" className="block text-sm text-gray-800 mb-2">
                 Re-type password
               </label>
               <div className="relative">
@@ -107,6 +152,7 @@ const ChangePassword = (): JSX.Element => {
                   value={retypePassword}
                   onChange={(e) => setRetypePassword(e.target.value)}
                   className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-transparent"
+                  required
                 />
                 <button
                   type="button"
@@ -119,29 +165,26 @@ const ChangePassword = (): JSX.Element => {
               </div>
             </div>
 
+            {/* Messages */}
+            {serverError && <p className="text-sm text-red-600">{serverError}</p>}
+            {success && <p className="text-sm text-green-600">{success}</p>}
+
             {/* Submit Button */}
             <div className="flex justify-end pt-2">
               <button
                 type="submit"
                 disabled={
+                  loading ||
                   !oldPassword ||
                   !newPassword ||
+                  !retypePassword ||
                   newPassword !== retypePassword
                 }
                 className="bg-cyan-500 hover:bg-cyan-600 text-white text-sm font-medium px-6 py-2.5 rounded-full transition-colors disabled:opacity-60"
               >
-                Change password
+                {loading ? "Saving..." : "Change password"}
               </button>
             </div>
-
-            {/* Validation message */}
-            {newPassword &&
-              retypePassword &&
-              newPassword !== retypePassword && (
-                <p className="text-sm text-red-600">
-                  New password and re-typed password do not match.
-                </p>
-              )}
           </form>
         </div>
       </main>

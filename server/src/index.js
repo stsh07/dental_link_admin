@@ -14,7 +14,6 @@ const DEFAULT_ORIGINS = [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
 ];
-// Allow comma-separated overrides in env, e.g. CORS_ORIGIN=http://foo:8080,http://bar:3001
 const extra = (process.env.CORS_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
@@ -24,7 +23,6 @@ const ALLOWED_ORIGINS = Array.from(new Set([...DEFAULT_ORIGINS, ...extra]));
 
 const corsConfig = {
   origin(origin, cb) {
-    // Allow server-to-server/no-Origin cases (Postman, curl, same-origin)
     if (!origin) return cb(null, true);
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error(`CORS: origin not allowed: ${origin}`));
@@ -36,7 +34,6 @@ const corsConfig = {
 };
 
 app.use(cors(corsConfig));
-// make sure every preflight receives CORS headers
 app.options("*", cors(corsConfig));
 
 /* ---------- Body parsing ---------- */
@@ -55,22 +52,21 @@ const resetAdminRouter = require("./routes/reset-admin");
 const appointmentsRouter = require("./routes/appointments");
 const doctorsRouter = require("./routes/doctors");
 const reviewsRouter = require("./routes/reviews");
-const adminPatientsRouter = require("./routes/adminPatients"); // 👈 ADD THIS
+const adminPatientsRouter = require("./routes/adminPatients");
+const changePasswordRouter = require("./routes/change-password"); // 👈 NEW
 
 app.use("/api/auth", authRouter);
 app.use("/api/reset-admin", resetAdminRouter);
-
-// 👇 mount BEFORE the generic /api router (not strictly required, but cleaner)
 app.use("/api/admin/patients", adminPatientsRouter);
-
 app.use("/api", appointmentsRouter);
 app.use("/api/doctors", doctorsRouter);
 app.use("/api", reviewsRouter);
+app.use("/api/change-password", changePasswordRouter); // 👈 MOUNT
 
 /* ---------- 404 ---------- */
 app.use((req, res) => res.status(404).json({ ok: false, error: "NOT_FOUND" }));
 
-/* ---------- Error handler (keeps CORS headers) ---------- */
+/* ---------- Error handler ---------- */
 app.use((err, _req, res, _next) => {
   console.error("[API ERROR]", err?.message || err);
   res.status(500).json({ ok: false, error: "Internal server error" });
