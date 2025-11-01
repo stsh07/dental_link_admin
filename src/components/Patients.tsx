@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import { BellIcon, SearchIcon, ChevronRight } from "lucide-react";
 import profile from "../assets/profile.svg";
+import PatientsPopup from "../popups/PatientsPopup";
 
 type PatientRow = {
   id: number;
@@ -10,7 +12,7 @@ type PatientRow = {
   gender: string | null;
   email: string | null;
   phone: string | null;
-  lastVisit: string; // YYYY-MM-DD
+  lastVisit: string;
 };
 
 type ApiResponse = {
@@ -20,6 +22,10 @@ type ApiResponse = {
   items: PatientRow[];
 };
 
+const API_BASE =
+  (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/+$/, "") ||
+  "http://localhost:4002";
+
 const prettyDate = (ymd?: string | null) => {
   if (!ymd) return "-";
   const [y, m, d] = ymd.split("-").map(Number);
@@ -28,22 +34,41 @@ const prettyDate = (ymd?: string | null) => {
 };
 
 export default function Patients(): JSX.Element {
+  const navigate = useNavigate();
+  const { id } = useParams<{ id?: string }>();
+
+  // If URL is /patients/:id -> render the detail page content-only (keeps sidebar/header)
+  if (id) {
+    return (
+      <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
+        <Sidebar />
+        <main className="flex-1 min-w-0 flex flex-col">
+          <header className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
+            <h1 className="text-black text-[28px] font-semibold">Patients</h1>
+            <div />
+          </header>
+          <div className="flex-1 overflow-y-auto px-8 pt-4 pb-8">
+            <PatientsPopup />
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<PatientRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-
   const abortRef = useRef<AbortController | null>(null);
 
   const load = async () => {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
-
     setLoading(true);
     setErr("");
     try {
-      const u = new URL("http://localhost:4002/api/admin/patients");
+      const u = new URL(`${API_BASE}/api/admin/patients`);
       u.searchParams.set("page", "1");
       u.searchParams.set("pageSize", "100");
       if (query.trim()) u.searchParams.set("search", query.trim());
@@ -62,9 +87,10 @@ export default function Patients(): JSX.Element {
     }
   };
 
-  useEffect(() => { load(); }, [query]);
+  useEffect(() => {
+    load();
+  }, [query]);
 
-  // Also refresh when other pages broadcast updates
   useEffect(() => {
     const onUpdate = () => load();
     window.addEventListener("patients-updated", onUpdate);
@@ -81,11 +107,9 @@ export default function Patients(): JSX.Element {
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
-
       <main className="flex-1 min-w-0 flex flex-col">
         <header className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
           <h1 className="text-black text-[28px] font-semibold">Patients</h1>
-
           <div className="flex items-center gap-4">
             <div className="relative w-[320px] h-10 bg-white rounded-full border border-[#d9d9d9] shadow-inner flex items-center px-4">
               <SearchIcon className="w-4 h-4 text-gray-400 mr-2" />
@@ -108,7 +132,6 @@ export default function Patients(): JSX.Element {
                 {loading ? "Loading…" : err ? `Error: ${err}` : `You have ${totalPatients} patients.`}
               </p>
             </div>
-
             <button className="bg-[#30b8de] hover:bg-[#2bacd0] text-white rounded-lg h-[36px] px-5 text-sm font-medium">
               + Add Patient
             </button>
@@ -119,12 +142,12 @@ export default function Patients(): JSX.Element {
               <table className="w-full table-fixed border-collapse">
                 <colgroup>
                   <col className="w-[22%]" />
-                  <col className="w-[8%]"  />
+                  <col className="w-[8%]" />
                   <col className="w-[10%]" />
                   <col className="w-[20%]" />
                   <col className="w-[16%]" />
                   <col className="w-[16%]" />
-                  <col className="w-[8%]"  />
+                  <col className="w-[8%]" />
                 </colgroup>
 
                 <thead>
@@ -159,11 +182,17 @@ export default function Patients(): JSX.Element {
                       <td className="py-3 px-4 text-gray-700 text-sm">{p.gender ?? "-"}</td>
                       <td className="py-3 px-4 text-gray-700 text-sm">{p.email ?? "-"}</td>
                       <td className="py-3 px-4 text-gray-700 text-sm">{p.phone ?? "-"}</td>
-                      <td className="py-3 px-4 text-gray-700 text-sm">{prettyDate(p.lastVisit)}</td>
+                      <td className="py-3 px-4 text-gray-700 text-sm">
+                        {prettyDate(p.lastVisit)}
+                      </td>
                       <td className="py-3 px-4">
                         <button
                           type="button"
-                          className="p-1 rounded hover:bg-gray-100 text-gray-600 hover:text-gray-800 transition"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/patients/${p.id}`);
+                          }}
+                          className="p-1 rounded hover:bg-gray-100 text-gray-600 hover:text-gray-800 transition cursor-pointer"
                           aria-label={`View ${p.name} details`}
                           title="View Details"
                         >

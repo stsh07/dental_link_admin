@@ -1,9 +1,8 @@
-// server/src/routes/doctors.js
 const express = require("express");
 const router = express.Router();
 const { pool, query } = require("../db");
 
-// ---------- Multer (file uploads) ----------
+// uploads
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
@@ -22,14 +21,13 @@ const storage = multer.diskStorage({
 });
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!file.mimetype.startsWith("image/")) return cb(new Error("ONLY_IMAGE"));
     cb(null, true);
   },
 });
 
-// ---------- Helpers ----------
 function mapDentist(row) {
   return {
     id: row.id,
@@ -48,7 +46,6 @@ function mapDentist(row) {
   };
 }
 
-/** Check if a column exists in the current DB */
 async function hasColumn(tableName, columnName) {
   const sql = `
     SELECT COUNT(*) AS cnt
@@ -61,7 +58,6 @@ async function hasColumn(tableName, columnName) {
   return (rows[0]?.cnt || 0) > 0;
 }
 
-/** Returns the first existing column name from candidates, or null */
 async function firstExistingColumn(tableName, candidates) {
   for (const col of candidates) {
     if (await hasColumn(tableName, col)) return col;
@@ -69,9 +65,7 @@ async function firstExistingColumn(tableName, candidates) {
   return null;
 }
 
-// ---------- Routes ----------
-
-/** ========== LIST (active only) ========== */
+/* ================= LIST (active only) ================= */
 router.get("/", async (_req, res) => {
   try {
     const rows = await query(
@@ -88,7 +82,7 @@ router.get("/", async (_req, res) => {
   }
 });
 
-/** ========== ACTIVE APPOINTMENT COUNTS (per doctor) ========== */
+/* ================= ACTIVE COUNTS ================= */
 router.get("/counts/active", async (_req, res) => {
   try {
     const doctorColExists = await hasColumn("appointments", "doctor");
@@ -150,7 +144,7 @@ router.get("/counts/active", async (_req, res) => {
   }
 });
 
-/** ========== GET ONE (numeric :id) ========== */
+/* ================= GET ONE ================= */
 router.get("/:id(\\d+)", async (req, res) => {
   try {
     const rows = await query(
@@ -170,7 +164,7 @@ router.get("/:id(\\d+)", async (req, res) => {
   }
 });
 
-/** ========== APPOINTMENTS FOR ONE DOCTOR ========== */
+/* ================= APPOINTMENTS FOR DOCTOR ================= */
 router.get("/:id(\\d+)/appointments", async (req, res) => {
   const id = Number(req.params.id);
   const scope = String(req.query.scope || "active").toLowerCase();
@@ -184,16 +178,14 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
   try {
     const doctorColExists = await hasColumn("appointments", "doctor");
 
-    // 🔧 Wider set of candidates, includes your schema:
     const patientCol = await firstExistingColumn("appointments", [
       "patient_name",
-      "full_name",        // <— your table uses this
+      "full_name",
       "patient",
       "client_name",
       "name",
     ]);
 
-    // Prefer text column; if missing, we’ll use p.name via LEFT JOIN
     const serviceTextCol = await firstExistingColumn("appointments", [
       "service",
       "procedure",
@@ -206,7 +198,7 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
       "appt_date",
       "scheduled_date",
       "schedule_date",
-      "preferred_date",   // <— your table uses this
+      "preferred_date",
       "created_at",
     ]);
 
@@ -217,31 +209,21 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
       "appointment_time",
       "appt_time",
       "scheduled_time",
-      "preferred_time",   // <— your table uses this
+      "preferred_time",
     ]);
 
     const reviewCol = await firstExistingColumn("appointments", [
       "review",
       "feedback",
-      "notes",            // <— your table uses this
+      "notes",
     ]);
 
-    // SELECT expressions
     const patientExpr = patientCol ? `a.\`${patientCol}\`` : `a.\`full_name\``;
-
-    // Join to procedures so we can always show a readable service name
     const serviceExpr = serviceTextCol ? `a.\`${serviceTextCol}\`` : `p.name`;
-
-    const dateFmtExpr = dateCol
-      ? `DATE_FORMAT(a.\`${dateCol}\`, '%Y-%m-%d')`
-      : `NULL`;
-    const timeFmtExpr = timeStartCol
-      ? `DATE_FORMAT(a.\`${timeStartCol}\`, '%H:%i')`
-      : `NULL`;
-
+    const dateFmtExpr = dateCol ? `DATE_FORMAT(a.\`${dateCol}\`, '%Y-%m-%d')` : `NULL`;
+    const timeFmtExpr = timeStartCol ? `DATE_FORMAT(a.\`${timeStartCol}\`, '%H:%i')` : `NULL`;
     const reviewExpr = reviewCol ? `a.\`${reviewCol}\`` : `''`;
 
-    // Optional doctor-name text match
     const doctorMatch = doctorColExists
       ? `
           OR (
@@ -288,7 +270,7 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
   }
 });
 
-/** ========== CREATE (with profile upload) ========== */
+/* ================= CREATE ================= */
 router.post("/", upload.single("profile"), async (req, res) => {
   const {
     firstName,
@@ -339,7 +321,7 @@ router.post("/", upload.single("profile"), async (req, res) => {
   }
 });
 
-/** ========== UPDATE STATUS ========== */
+/* ================= UPDATE STATUS ================= */
 router.patch("/:id(\\d+)/status", async (req, res) => {
   try {
     const { status } = req.body || {};
@@ -353,11 +335,44 @@ router.patch("/:id(\\d+)/status", async (req, res) => {
   }
 });
 
-/** ========== SOFT DELETE ========== */
+/* ================= DELETE (hard delete, fallback to soft) ================= */
 router.delete("/:id(\\d+)", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ ok: false, error: "INVALID_ID" });
+
   try {
-    await pool.query(`UPDATE dentists SET is_active = 0 WHERE id = ?`, [req.params.id]);
-    res.json({ ok: true });
+    // get current doctor to know profile file
+    const [rows] = await pool.query(
+      "SELECT profile_url FROM dentists WHERE id = ? LIMIT 1",
+      [id]
+    );
+    const row = rows?.[0];
+
+    try {
+      const [del] = await pool.query("DELETE FROM dentists WHERE id = ?", [id]);
+      if (del.affectedRows === 0) {
+        return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+      }
+
+      // delete photo from disk (optional)
+      if (row && row.profile_url && row.profile_url.startsWith("/uploads/doctors/")) {
+        const abs = path.join(__dirname, "..", "..", row.profile_url);
+        fs.promises.unlink(abs).catch(() => {});
+      }
+
+      return res.json({ ok: true });
+    } catch (err) {
+      // foreign key? then do soft delete
+      if (err && (err.code === "ER_ROW_IS_REFERENCED_2" || err.errno === 1451)) {
+        await pool.query("UPDATE dentists SET is_active = 0 WHERE id = ?", [id]);
+        return res.json({
+          ok: true,
+          softDeleted: true,
+          warning: "Doctor has related records. Marked as inactive instead.",
+        });
+      }
+      throw err;
+    }
   } catch (e) {
     console.error("[doctors:delete]", e);
     res.status(500).json({ ok: false, error: "DB_ERROR" });
