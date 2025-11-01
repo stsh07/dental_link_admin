@@ -1,8 +1,7 @@
+// server/src/routes/doctors.js
 const express = require("express");
 const router = express.Router();
 const { pool, query } = require("../db");
-
-// uploads
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
@@ -65,7 +64,7 @@ async function firstExistingColumn(tableName, candidates) {
   return null;
 }
 
-/* ================= LIST (active only) ================= */
+/* ============= list ============= */
 router.get("/", async (_req, res) => {
   try {
     const rows = await query(
@@ -82,11 +81,10 @@ router.get("/", async (_req, res) => {
   }
 });
 
-/* ================= ACTIVE COUNTS ================= */
+/* ============= active counts ============= */
 router.get("/counts/active", async (_req, res) => {
   try {
     const doctorColExists = await hasColumn("appointments", "doctor");
-
     let rows;
     if (doctorColExists) {
       rows = await query(
@@ -98,14 +96,14 @@ router.get("/counts/active", async (_req, res) => {
         LEFT JOIN (
           SELECT a.dentist_id, COUNT(*) AS cnt
           FROM appointments a
-          WHERE a.status IN ('PENDING','CONFIRMED')
+          WHERE a.status IN ('PENDING','CONFIRMED','APPROVED')
             AND a.dentist_id IS NOT NULL
           GROUP BY a.dentist_id
         ) cnt_id ON cnt_id.dentist_id = d.id
         LEFT JOIN (
           SELECT a.doctor, COUNT(*) AS cnt
           FROM appointments a
-          WHERE a.status IN ('PENDING','CONFIRMED')
+          WHERE a.status IN ('PENDING','CONFIRMED','APPROVED')
             AND a.dentist_id IS NULL
             AND a.doctor IS NOT NULL
           GROUP BY a.doctor
@@ -124,7 +122,7 @@ router.get("/counts/active", async (_req, res) => {
         LEFT JOIN (
           SELECT a.dentist_id, COUNT(*) AS cnt
           FROM appointments a
-          WHERE a.status IN ('PENDING','CONFIRMED')
+          WHERE a.status IN ('PENDING','CONFIRMED','APPROVED')
             AND a.dentist_id IS NOT NULL
           GROUP BY a.dentist_id
         ) cnt_id ON cnt_id.dentist_id = d.id
@@ -136,7 +134,6 @@ router.get("/counts/active", async (_req, res) => {
 
     const counts = {};
     for (const r of rows) counts[r.full_name] = Number(r.count) || 0;
-
     res.json({ ok: true, counts });
   } catch (e) {
     console.error("[doctors:counts:active]", e);
@@ -144,7 +141,7 @@ router.get("/counts/active", async (_req, res) => {
   }
 });
 
-/* ================= GET ONE ================= */
+/* ============= get one ============= */
 router.get("/:id(\\d+)", async (req, res) => {
   try {
     const rows = await query(
@@ -164,16 +161,16 @@ router.get("/:id(\\d+)", async (req, res) => {
   }
 });
 
-/* ================= APPOINTMENTS FOR DOCTOR ================= */
+/* ============= appointments for doctor ============= */
 router.get("/:id(\\d+)/appointments", async (req, res) => {
   const id = Number(req.params.id);
   const scope = String(req.query.scope || "active").toLowerCase();
 
-  const allowed = {
-    active: `('PENDING','CONFIRMED')`,
-    history: `('COMPLETED','DECLINED')`,
+  const statusMap = {
+    active: "('PENDING','CONFIRMED','APPROVED')",
+    history: "('COMPLETED','DONE','FINISHED','DECLINED','CANCELLED','CANCELED')",
   };
-  const statusList = allowed[scope] || allowed.active;
+  const statusList = statusMap[scope] || statusMap.active;
 
   try {
     const doctorColExists = await hasColumn("appointments", "doctor");
@@ -219,7 +216,7 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
     ]);
 
     const patientExpr = patientCol ? `a.\`${patientCol}\`` : `a.\`full_name\``;
-    const serviceExpr = serviceTextCol ? `a.\`${serviceTextCol}\`` : `p.name`;
+    const serviceExpr = serviceTextCol ? `a.\`${serviceTextCol}\`` : `s.name`;
     const dateFmtExpr = dateCol ? `DATE_FORMAT(a.\`${dateCol}\`, '%Y-%m-%d')` : `NULL`;
     const timeFmtExpr = timeStartCol ? `DATE_FORMAT(a.\`${timeStartCol}\`, '%H:%i')` : `NULL`;
     const reviewExpr = reviewCol ? `a.\`${reviewCol}\`` : `''`;
@@ -250,14 +247,14 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
         a.status,
         ${reviewExpr}                          AS review
       FROM appointments a
-      LEFT JOIN dentists d   ON d.id = a.dentist_id
-      LEFT JOIN procedures p ON p.id = a.procedure_id
+      LEFT JOIN dentists d  ON d.id = a.dentist_id
+      LEFT JOIN services s  ON s.id = a.procedure_id
       WHERE
         (
           a.dentist_id = ?
           ${doctorMatch}
         )
-        AND a.status IN ${statusList}
+        AND TRIM(UPPER(a.status)) IN ${statusList}
       ORDER BY ${orderByDate} DESC, ${orderByTime} DESC, a.id DESC
       `,
       params
@@ -270,7 +267,7 @@ router.get("/:id(\\d+)/appointments", async (req, res) => {
   }
 });
 
-/* ================= CREATE ================= */
+/* ============= create ============= */
 router.post("/", upload.single("profile"), async (req, res) => {
   const {
     firstName,
@@ -321,7 +318,7 @@ router.post("/", upload.single("profile"), async (req, res) => {
   }
 });
 
-/* ================= UPDATE STATUS ================= */
+/* ============= update status ============= */
 router.patch("/:id(\\d+)/status", async (req, res) => {
   try {
     const { status } = req.body || {};
@@ -335,13 +332,12 @@ router.patch("/:id(\\d+)/status", async (req, res) => {
   }
 });
 
-/* ================= DELETE (hard delete, fallback to soft) ================= */
+/* ============= delete ============= */
 router.delete("/:id(\\d+)", async (req, res) => {
   const id = Number(req.params.id);
   if (!id) return res.status(400).json({ ok: false, error: "INVALID_ID" });
 
   try {
-    // get current doctor to know profile file
     const [rows] = await pool.query(
       "SELECT profile_url FROM dentists WHERE id = ? LIMIT 1",
       [id]
@@ -354,7 +350,6 @@ router.delete("/:id(\\d+)", async (req, res) => {
         return res.status(404).json({ ok: false, error: "NOT_FOUND" });
       }
 
-      // delete photo from disk (optional)
       if (row && row.profile_url && row.profile_url.startsWith("/uploads/doctors/")) {
         const abs = path.join(__dirname, "..", "..", row.profile_url);
         fs.promises.unlink(abs).catch(() => {});
@@ -362,7 +357,6 @@ router.delete("/:id(\\d+)", async (req, res) => {
 
       return res.json({ ok: true });
     } catch (err) {
-      // foreign key? then do soft delete
       if (err && (err.code === "ER_ROW_IS_REFERENCED_2" || err.errno === 1451)) {
         await pool.query("UPDATE dentists SET is_active = 0 WHERE id = ?", [id]);
         return res.json({

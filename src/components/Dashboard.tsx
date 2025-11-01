@@ -2,18 +2,30 @@ import React, { useEffect, useState } from 'react';
 import { Bell } from 'lucide-react';
 import Sidebar from './Sidebar';
 
-// SVGs
 import totalPatientIcon from '../assets/total_patient.svg';
 import completedIcon from '../assets/completed.svg';
 import pendingIcon from '../assets/pending.svg';
 import declinedIcon from '../assets/declined.svg';
 
+type StatsPayload = {
+  ok: boolean;
+  stats: {
+    totalAppointments: number;
+    pending: number;
+    approved: number;
+    confirmed: number;
+    completed: number;
+    declined?: number;
+  };
+};
+
 type Stats = {
-  total: number;
+  totalAppointments: number;
   pending: number;
-  confirmed: number; // Approved in UI
-  declined: number;
+  approved: number;
+  confirmed: number;
   completed: number;
+  declined: number;
 };
 
 type DoctorRow = {
@@ -30,29 +42,30 @@ type ApiAppointment = {
   id: number;
   patientName: string;
   doctor: string;
-  date: string;       // YYYY-MM-DD
-  timeStart: string;  // HH:MM
+  date: string;
+  timeStart: string;
   service: string;
-  status: 'PENDING' | 'CONFIRMED' | 'DECLINED' | 'COMPLETED';
+  status: 'PENDING' | 'CONFIRMED' | 'DECLINED' | 'COMPLETED' | 'APPROVED' | string;
 };
 
 type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
 
-/* ===================== Helpers ===================== */
+type TopService = {
+  name: string;
+  percentage: number;
+  count: number;
+};
+
 const normalize = (s: string) => (s || '').trim().toLowerCase();
 
-// Manila "today" as YYYY-MM-DD (no external libs)
 const todayYMDManila = (): string => {
-  const d = new Date(
-    new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila' })
-  );
+  const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila' }));
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 };
 
-// parse "HH:MM"
 const parseHHMM = (val?: string | null): { h: number; m: number } | null => {
   if (!val || typeof val !== "string") return null;
   const m = val.match(/^(\d{1,2}):(\d{2})$/);
@@ -78,12 +91,10 @@ const addMinutesSafe = (hhmm: string | null | undefined, mins: number): string |
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 };
 const fmtDateCompact = (ymd: string): string => {
-  // 2025-10-24 -> 10.24.25
   const [y, m, d] = ymd.split('-');
   return `${m}.${d}.${String(y).slice(-2)}`;
 };
 
-// Robust normalizer (same as ActiveAppointments)
 const normalizeItem = (raw: any): ApiAppointment => {
   const id = Number(raw.id ?? 0);
   const patientName = String(raw.patientName ?? raw.full_name ?? raw.name ?? "").trim();
@@ -91,25 +102,42 @@ const normalizeItem = (raw: any): ApiAppointment => {
   const date = String(raw.date ?? raw.preferredDate ?? "").slice(0, 10);
   const timeStart = String(raw.timeStart ?? raw.preferredTime ?? "").slice(0, 5);
   const service = String(raw.service ?? raw.serviceName ?? raw.procedureName ?? raw.procedure ?? "").trim();
-  const status = (String(raw.status ?? "PENDING").toUpperCase() as ApiAppointment["status"]);
+  const status = String(raw.status ?? "PENDING").toUpperCase();
   return { id, patientName, doctor, date, timeStart, service, status };
 };
 
-/* ===================== Component ===================== */
 const Dashboard: React.FC = () => {
-  /* ---------- STATS ---------- */
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsErr, setStatsErr] = useState<string>('');
+
+  const [doctors, setDoctors] = useState<DoctorRow[]>([]);
+  const [doctorsLoading, setDoctorsLoading] = useState<boolean>(true);
+  const [doctorsErr, setDoctorsErr] = useState<string>('');
+
+  const [activeCounts, setActiveCounts] = useState<Record<string, number>>({});
+  const [countsLoading, setCountsLoading] = useState<boolean>(true);
+
+  const [todaysApproved, setTodaysApproved] = useState<ApiAppointment[]>([]);
+  const [todayLoading, setTodayLoading] = useState<boolean>(true);
+
+  const [topServices, setTopServices] = useState<TopService[]>([]);
 
   const fetchStats = async () => {
     try {
       setStatsLoading(true);
       setStatsErr('');
       const res = await fetch('http://localhost:4002/api/admin/stats', { cache: 'no-store' });
-      const json: Stats | any = await res.json();
-      if (!res.ok) throw new Error(json?.error || 'Failed to load stats');
-      setStats(json as Stats);
+      const json: StatsPayload = await res.json();
+      if (!res.ok || !json.ok) throw new Error((json as any)?.error || 'Failed to load stats');
+      setStats({
+        totalAppointments: json.stats.totalAppointments,
+        pending: json.stats.pending,
+        approved: json.stats.approved,
+        confirmed: json.stats.confirmed,
+        completed: json.stats.completed,
+        declined: json.stats.declined ?? 0,
+      });
     } catch (e: any) {
       setStatsErr(e?.message || 'Failed to load stats');
       setStats(null);
@@ -118,43 +146,42 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  useEffect(() => { fetchStats(); }, []);
+  const fetchTopServices = async () => {
+    try {
+      const res = await fetch('http://localhost:4002/api/admin/top-services', { cache: 'no-store' });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json?.error || 'Failed to load top services');
+      setTopServices(json.items || []);
+    } catch {
+      setTopServices([]);
+    }
+  };
+
   useEffect(() => {
-    const refresh = () => fetchStats();
+    fetchStats();
+    fetchTopServices();
+  }, []);
+
+  useEffect(() => {
+    const refresh = () => {
+      fetchStats();
+      fetchTopServices();
+    };
     window.addEventListener('appointments-updated', refresh);
     return () => window.removeEventListener('appointments-updated', refresh);
   }, []);
 
-  const approved  = stats?.confirmed || 0;
+  const approved = stats?.confirmed || 0;
   const completed = stats?.completed || 0;
-  const pending   = stats?.pending || 0;
-  const declined  = stats?.declined || 0;
+  const pending = stats?.pending || 0;
+  const declined = stats?.declined || 0;
 
   const cards = [
-    { label: 'Approved',  value: approved,  iconSrc: totalPatientIcon },
+    { label: 'Approved', value: approved, iconSrc: totalPatientIcon },
     { label: 'Completed', value: completed, iconSrc: completedIcon },
-    { label: 'Pending',   value: pending,   iconSrc: pendingIcon },
-    { label: 'Declined',  value: declined,  iconSrc: declinedIcon },
+    { label: 'Pending', value: pending, iconSrc: pendingIcon },
+    { label: 'Declined', value: declined, iconSrc: declinedIcon },
   ];
-
-  const services = [
-    { name: 'Cleaning', percentage: 55, color: 'bg-blue-500' },
-    { name: 'Tooth Extraction', percentage: 25, color: 'bg-blue-500' },
-    { name: 'Tooth Filling', percentage: 20, color: 'bg-blue-500' }
-  ];
-
-  /* ---------- DOCTORS + ACTIVE COUNTS & TODAY LIST ---------- */
-  const [doctors, setDoctors] = useState<DoctorRow[]>([]);
-  const [doctorsLoading, setDoctorsLoading] = useState<boolean>(true);
-  const [doctorsErr, setDoctorsErr] = useState<string>('');
-
-  // Active counts (Pending + Confirmed) per doctor
-  const [activeCounts, setActiveCounts] = useState<Record<string, number>>({});
-  const [countsLoading, setCountsLoading] = useState<boolean>(true);
-
-  // Today’s approved appointments (for the dashboard card)
-  const [todaysApproved, setTodaysApproved] = useState<ApiAppointment[]>([]);
-  const [todayLoading, setTodayLoading] = useState<boolean>(true);
 
   const fetchDoctors = async () => {
     try {
@@ -184,9 +211,7 @@ const Dashboard: React.FC = () => {
       if (!res.ok) throw new Error(json?.error || 'Failed to load appointments');
 
       const items: ApiAppointment[] = (json.items || []).map(normalizeItem);
-
-      // Active = PENDING + CONFIRMED (for counts by doctor)
-      const active = items.filter(a => a.status === 'PENDING' || a.status === 'CONFIRMED');
+      const active = items.filter(a => a.status === 'PENDING' || a.status === 'CONFIRMED' || a.status === 'APPROVED');
 
       const map: Record<string, number> = {};
       for (const a of active) {
@@ -196,15 +221,13 @@ const Dashboard: React.FC = () => {
       }
       setActiveCounts(map);
 
-      // Today's Approved = date == today(Manila) AND status == CONFIRMED
       const todayYMD = todayYMDManila();
       const todays = items
-        .filter(a => a.status === 'CONFIRMED' && a.date === todayYMD)
+        .filter(a => (a.status === 'CONFIRMED' || a.status === 'APPROVED') && a.date === todayYMD)
         .sort((a, b) => (a.timeStart < b.timeStart ? -1 : a.timeStart > b.timeStart ? 1 : 0));
 
       setTodaysApproved(todays);
     } catch {
-      // Keep last values on error
     } finally {
       setCountsLoading(false);
       setTodayLoading(false);
@@ -239,29 +262,28 @@ const Dashboard: React.FC = () => {
       ? 'text-gray-600'
       : 'text-gray-500';
 
-  // Only show "At Work"
   const doctorsAtWork = doctors.filter((d) => (d.status || '') === 'At Work');
+
+  const topServicesToShow =
+    topServices.length > 0
+      ? topServices
+      : [
+          { name: 'No data yet', percentage: 0, count: 0 },
+        ];
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
-      {/* Sidebar */}
       <Sidebar />
-
-      {/* Main */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Header */}
         <div className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
           <h1 className="text-black text-[28px] font-semibold">Dashboard Overview</h1>
           <Bell className="w-6 h-6 text-gray-600" />
         </div>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
-          {/* Status / error */}
           {statsLoading && <p className="text-sm text-gray-500 mb-3">Loading stats…</p>}
           {!!statsErr && <p className="text-sm text-red-600 mb-3">Error: {statsErr}</p>}
 
-          {/* Stats cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
             {cards.map((c) => (
               <div key={c.label} className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
@@ -276,11 +298,11 @@ const Dashboard: React.FC = () => {
             ))}
           </div>
 
-          {/* Top Services */}
+          {/* Top Services (dynamic) */}
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm mb-4">
             <h3 className="text-lg font-semibold text-gray-800 mb-4">Top Services</h3>
             <div className="space-y-4">
-              {services.map((service, index) => (
+              {topServicesToShow.map((service, index) => (
                 <div key={index}>
                   <div className="flex justify-between items-center mb-2">
                     <span className="text-sm text-gray-600">{service.name}</span>
@@ -288,7 +310,7 @@ const Dashboard: React.FC = () => {
                   </div>
                   <div className="w-full bg-gray-200 h-2 rounded">
                     <div
-                      className={`h-2 rounded ${service.color}`}
+                      className="h-2 rounded bg-blue-500"
                       style={{ width: `${service.percentage}%` }}
                     />
                   </div>
@@ -297,9 +319,7 @@ const Dashboard: React.FC = () => {
             </div>
           </div>
 
-          {/* Bottom Section */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Doctors at work */}
             <div className="bg-white px-6 pt-6 pb-2 rounded-xl border border-gray-200 shadow-sm">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-800">Doctors at work</h3>
@@ -324,14 +344,11 @@ const Dashboard: React.FC = () => {
                           <p className="font-medium text-gray-900 leading-6">{d.full_name}</p>
                           <p className="text-xs text-gray-400 mt-0.5">{d.work_time || '08:00 – 17:00'}</p>
                         </div>
-
                         <div className="text-center">
                           <p className="text-sm font-medium text-gray-900">
                             {count} patients
                           </p>
                         </div>
-
-                        {/* Status */}
                         <div className="text-left">
                           <p className={`text-sm font-medium ${statusClass(d.status)}`}>
                             {d.status || 'At Work'}
@@ -344,11 +361,8 @@ const Dashboard: React.FC = () => {
               )}
             </div>
 
-            {/* Today's Appointments (dynamic: only CONFIRMED for Manila today) */}
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
               <h3 className="text-lg font-semibold text-gray-800 mb-10">Todays Appointments</h3>
-
-              {/* Header row */}
               <div className="grid grid-cols-3 text-sm font-medium text-gray-600 mb-3 px-1">
                 <span>Patient</span>
                 <span>Date &amp; Time</span>
@@ -373,12 +387,10 @@ const Dashboard: React.FC = () => {
                         <div className="truncate">
                           <p className="text-sm font-medium text-gray-900">{a.patientName || '—'}</p>
                         </div>
-
                         <div>
                           <p className="text-sm font-semibold text-gray-900">{timeRange}</p>
                           <p className="text-xs text-gray-400">{dateDisp}</p>
                         </div>
-
                         <div className="text-left">
                           <p className="text-sm font-semibold text-gray-900">{a.service || '—'}</p>
                         </div>
@@ -387,12 +399,10 @@ const Dashboard: React.FC = () => {
                   })}
                 </div>
               ) : (
-                // No message when empty — renders nothing
                 <div />
               )}
             </div>
           </div>
-          {/* End Bottom Section */}
         </div>
       </div>
     </div>
