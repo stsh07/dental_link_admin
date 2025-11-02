@@ -3,185 +3,193 @@ const express = require("express");
 const router = express.Router();
 const { pool } = require("../db");
 
-/* admin paginated list */
-router.get("/admin/appointments", async (req, res) => {
-  const page = Number(req.query.page) > 0 ? Number(req.query.page) : 1;
-  const pageSize = Number(req.query.pageSize) > 0 ? Number(req.query.pageSize) : 50;
-  const offset = (page - 1) * pageSize;
-  const status = (req.query.status || "").toString().trim();
+const SLOT_BLOCKS = ["08:00", "10:00", "13:00", "15:00"];
+const MANILA_OFFSET = 8 * 60 * 60 * 1000;
 
-  let whereClause = "1=1";
-  const params = [];
+const manilaNow = () => new Date(Date.now() + MANILA_OFFSET);
+const todayYMD = () => {
+  const d = manilaNow();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    d.getUTCDate()
+  ).padStart(2, "0")}`;
+};
+const toHM = (t) => {
+  const m = String(t).match(/(\d{1,2}):(\d{2})/);
+  if (!m) return t;
+  return `${String(Number(m[1])).padStart(2, "0")}:${m[2]}`;
+};
 
-  if (status) {
-    whereClause = "a.status = ?";
-    params.push(status);
-  }
+function buildSlots(date, existingTimes) {
+  const isToday = date === todayYMD();
+  const now = manilaNow();
+  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return SLOT_BLOCKS.map((t) => {
+    const end =
+      t === "08:00"
+        ? 10 * 60
+        : t === "10:00"
+        ? 12 * 60
+        : t === "13:00"
+        ? 15 * 60
+        : t === "15:00"
+        ? 17 * 60
+        : 24 * 60;
+    const booked = existingTimes.has(t);
+    let available = !booked;
+    if (isToday && nowMin >= end) available = false;
+    return { time: t, booked, available, past: isToday && nowMin >= end };
+  });
+}
 
+/* -------- slots for user form -------- */
+router.get("/appointments/slots", async (req, res) => {
   try {
-    const [countRows] = await pool.query(
-      `SELECT COUNT(*) AS total FROM appointments a WHERE ${whereClause}`,
-      params
+    const date = req.query.date;
+    const dentistId = req.query.dentistId ? Number(req.query.dentistId) : null;
+    if (!date) return res.status(400).json({ ok: false, error: "date required" });
+
+    const params = [date];
+    let sql =
+      "SELECT preferred_time FROM appointments WHERE preferred_date = ? AND UPPER(status) IN ('PENDING','CONFIRMED','APPROVED')";
+    if (dentistId) {
+      sql += " AND dentist_id = ?";
+      params.push(dentistId);
+    }
+    const [rows] = await pool.query(sql, params);
+    const times = new Set(rows.map((r) => toHM(r.preferred_time)));
+    const slots = buildSlots(date, times);
+    res.json({ ok: true, date, dentistId, slots });
+  } catch (err) {
+    console.error("slots err:", err);
+    res.status(500).json({ ok: false, error: "SLOTS_FAILED" });
+  }
+});
+
+/* -------- create from user site -------- */
+router.post("/appointments", async (req, res) => {
+  try {
+    const b = req.body || {};
+    const fullName = b.fullName || b.full_name;
+    const email = b.email;
+    const age = b.age ?? null;
+    const gender = b.gender ?? null;
+    const phone = b.phone ?? null;
+    const address = b.address ?? null;
+    const preferredDate = b.preferredDate || b.preferred_date;
+    const preferredTime = b.preferredTime || b.preferred_time;
+    const dentistId = b.dentistId || b.dentist_id;
+    const procedureId = b.procedureId || b.procedure_id || b.service_id;
+
+    if (!fullName || !email || !preferredDate || !preferredTime || !dentistId || !procedureId) {
+      return res.status(400).json({ ok: false, error: "Missing required fields" });
+    }
+
+    const [result] = await pool.query(
+      `INSERT INTO appointments
+       (full_name, email, age, gender, phone, address,
+        preferred_date, preferred_time, dentist_id, procedure_id, status, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL)`,
+      [
+        fullName,
+        email,
+        age,
+        gender,
+        phone,
+        address,
+        preferredDate,
+        preferredTime,
+        Number(dentistId),
+        Number(procedureId),
+      ]
     );
-    const total = countRows[0]?.total || 0;
+
+    res.status(201).json({ ok: true, id: result.insertId });
+  } catch (err) {
+    console.error("create appt err:", err);
+    res.status(500).json({ ok: false, error: "CREATE_FAILED" });
+  }
+});
+
+/* -------- admin list -------- */
+router.get("/admin/appointments", async (req, res) => {
+  try {
+    const page = Number(req.query.page || 1);
+    const pageSize = Number(req.query.pageSize || 50);
+    const search = (req.query.search || "").trim();
+    const offset = (page - 1) * pageSize;
+
+    const params = [];
+    let where = "1=1";
+    if (search) {
+      where += " AND (a.full_name LIKE ? OR a.email LIKE ?)";
+      params.push(`%${search}%`, `%${search}%`);
+    }
 
     const [rows] = await pool.query(
       `
       SELECT
         a.id,
-        a.full_name      AS patientName,
-        d.full_name      AS doctor,
-        a.preferred_date AS date,
-        a.preferred_time AS time,
-        s.name           AS service,
-        a.status         AS status
+        a.full_name AS patientName,
+        a.email,
+        a.phone,
+        a.age,
+        a.gender,
+        a.address,
+        DATE_FORMAT(a.preferred_date,'%Y-%m-%d') AS date,
+        DATE_FORMAT(a.preferred_time,'%H:%i') AS timeStart,
+        COALESCE(d.full_name, '') AS doctor,
+        COALESCE(s.name, '') AS service,
+        UPPER(a.status) AS status,
+        a.notes
       FROM appointments a
       LEFT JOIN dentists d ON d.id = a.dentist_id
       LEFT JOIN services s ON s.id = a.procedure_id
-      WHERE ${whereClause}
+      WHERE ${where}
       ORDER BY a.preferred_date DESC, a.preferred_time DESC, a.id DESC
-      LIMIT ? OFFSET ?
+      LIMIT ?, ?
       `,
-      [...params, pageSize, offset]
+      [...params, offset, pageSize]
+    );
+
+    const [cnt] = await pool.query(
+      `SELECT COUNT(*) AS c FROM appointments a WHERE ${where}`,
+      params
     );
 
     res.json({
-      ok: true,
-      data: rows,
       page,
       pageSize,
-      total,
+      total: cnt[0].c,
+      items: rows,
     });
   } catch (err) {
-    console.error("GET /admin/appointments error:", err);
-    res.status(500).json({ ok: false, error: "Failed to fetch appointments" });
+    console.error("admin list err:", err);
+    res.status(500).json({ ok: false, error: "LIST_FAILED" });
   }
 });
 
-/* list all (old) */
-router.get("/appointments", async (_req, res) => {
+/* -------- admin detail (popup) -------- */
+router.get("/admin/appointments/:id", async (req, res) => {
   try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "BAD_ID" });
+
     const [rows] = await pool.query(
       `
       SELECT
         a.id,
-        a.full_name,
+        a.full_name AS patientName,
         a.email,
         a.phone,
-        a.preferred_date,
-        a.preferred_time,
-        a.status,
-        s.name AS service,
-        d.full_name AS dentist
-      FROM appointments a
-      LEFT JOIN dentists d ON d.id = a.dentist_id
-      LEFT JOIN services s ON s.id = a.procedure_id
-      ORDER BY a.preferred_date DESC, a.preferred_time DESC, a.id DESC
-      `
-    );
-    res.json({ ok: true, data: rows });
-  } catch (err) {
-    console.error("GET /appointments error:", err);
-    res.status(500).json({ ok: false, error: "Failed to fetch appointments" });
-  }
-});
-
-/* user history (by email) */
-router.get("/appointments/user/history", async (req, res) => {
-  const email = String(req.query.email || "").trim();
-  if (!email) {
-    // front-end expects 200
-    return res.json({ ok: true, items: [] });
-  }
-
-  try {
-    const [rows] = await pool.query(
-      `
-      SELECT
-        a.id,
-        COALESCE(s.name, 'No service')                AS service,
-        DATE_FORMAT(a.preferred_date, '%Y-%m-%d')     AS dateISO,
-        a.dentist_id                                  AS dentistId,
-        d.full_name                                   AS dentist
-      FROM appointments a
-      LEFT JOIN services s ON s.id = a.procedure_id
-      LEFT JOIN dentists d ON d.id = a.dentist_id
-      WHERE LOWER(a.email) = LOWER(?)
-        AND TRIM(UPPER(a.status)) IN ('COMPLETED','DONE','FINISHED')
-      ORDER BY a.preferred_date DESC, a.preferred_time DESC, a.id DESC
-      `,
-      [email]
-    );
-
-    const items = rows.map((r) => ({
-      id: r.id,
-      service: r.service || "",
-      dateISO: r.dateISO || "",
-      dentistId: r.dentistId ? Number(r.dentistId) : 0,
-      dentist: r.dentist || "",
-    }));
-
-    res.json({ ok: true, items });
-  } catch (err) {
-    console.error("GET /appointments/user/history error:", err);
-    // still send 200 so your Next page won’t blow up
-    res.json({ ok: true, items: [] });
-  }
-});
-
-/* today */
-router.get("/appointments/today", async (_req, res) => {
-  try {
-    const today = new Date();
-    const y = today.getFullYear();
-    const m = (today.getMonth() + 1).toString().padStart(2, "0");
-    const d = today.getDate().toString().padStart(2, "0");
-    const ymd = `${y}-${m}-${d}`;
-    const [rows] = await pool.query(
-      `
-      SELECT
-        a.id,
-        a.full_name,
-        a.preferred_date,
-        a.preferred_time,
-        a.status,
-        s.name AS service,
-        d.full_name AS dentist
-      FROM appointments a
-      LEFT JOIN dentists d ON d.id = a.dentist_id
-      LEFT JOIN services s ON s.id = a.procedure_id
-      WHERE a.preferred_date = ?
-      ORDER BY a.preferred_time ASC, a.id DESC
-      `,
-      [ymd]
-    );
-    res.json({ ok: true, data: rows });
-  } catch (err) {
-    console.error("GET /appointments/today error:", err);
-    res.status(500).json({ ok: false, error: "Failed to fetch today's appointments" });
-  }
-});
-
-/* single */
-router.get("/appointments/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id) || id <= 0)
-    return res.status(400).json({ ok: false, error: "Invalid id" });
-  try {
-    const [rows] = await pool.query(
-      `
-      SELECT
-        a.id,
-        a.full_name,
-        a.email,
-        a.phone,
+        a.age,
+        a.gender,
         a.address,
-        a.preferred_date,
-        a.preferred_time,
-        a.status,
-        a.dentist_id,
-        s.name AS service,
-        d.full_name AS dentist
+        a.notes,
+        DATE_FORMAT(a.preferred_date,'%Y-%m-%d') AS date,
+        DATE_FORMAT(a.preferred_time,'%H:%i') AS timeStart,
+        COALESCE(d.full_name, '') AS doctor,
+        COALESCE(s.name, '') AS service,
+        UPPER(a.status) AS status
       FROM appointments a
       LEFT JOIN dentists d ON d.id = a.dentist_id
       LEFT JOIN services s ON s.id = a.procedure_id
@@ -190,131 +198,215 @@ router.get("/appointments/:id", async (req, res) => {
       `,
       [id]
     );
-    if (rows.length === 0)
-      return res.status(404).json({ ok: false, error: "Appointment not found" });
-    res.json({ ok: true, data: rows[0] });
+
+    if (!rows.length) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+    res.json(rows[0]);
   } catch (err) {
-    console.error("GET /appointments/:id error:", err);
-    res.status(500).json({ ok: false, error: "Failed to fetch appointment" });
+    console.error("admin detail err:", err);
+    res.status(500).json({ ok: false, error: "DETAIL_FAILED" });
   }
 });
 
-/* create */
-router.post("/appointments", async (req, res) => {
-  const {
-    full_name,
-    email,
-    phone,
-    address,
-    preferred_date,
-    preferred_time,
-    dentist_id,
-    procedure_id,
-  } = req.body;
-
-  if (!full_name || !preferred_date || !preferred_time) {
-    return res.status(400).json({ ok: false, error: "Missing required fields" });
-  }
-
+/* -------- admin approve -------- */
+router.post("/admin/appointments/:id/approve", async (req, res) => {
   try {
-    const [r] = await pool.query(
-      `
-      INSERT INTO appointments
-      (full_name, email, phone, address, preferred_date, preferred_time, dentist_id, procedure_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
-      `,
-      [
-        full_name,
-        email || null,
-        phone || null,
-        address || null,
-        preferred_date,
-        preferred_time,
-        dentist_id || null,
-        procedure_id || null,
-      ]
-    );
-    res.json({ ok: true, id: r.insertId });
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "BAD_ID" });
+
+    const [r] = await pool.query("UPDATE appointments SET status='CONFIRMED' WHERE id = ?", [id]);
+    if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+
+    res.json({ ok: true, id, status: "CONFIRMED" });
   } catch (err) {
-    console.error("POST /appointments error:", err);
-    res.status(500).json({ ok: false, error: "Failed to create appointment" });
+    console.error("approve err:", err);
+    res.status(500).json({ ok: false, error: "APPROVE_FAILED" });
   }
 });
 
-/* update status */
-router.patch("/appointments/:id/status", async (req, res) => {
-  const id = Number(req.params.id);
-  const { status } = req.body;
-  if (!Number.isFinite(id) || id <= 0)
-    return res.status(400).json({ ok: false, error: "Invalid id" });
-  if (!status) return res.status(400).json({ ok: false, error: "Status is required" });
-
+/* -------- admin decline -------- */
+router.post("/admin/appointments/:id/decline", async (req, res) => {
   try {
-    const [r] = await pool.query("UPDATE appointments SET status = ? WHERE id = ?", [status, id]);
-    if (r.affectedRows === 0)
-      return res.status(404).json({ ok: false, error: "Appointment not found" });
-    res.json({ ok: true });
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "BAD_ID" });
+
+    const [r] = await pool.query("UPDATE appointments SET status='DECLINED' WHERE id = ?", [id]);
+    if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+
+    res.json({ ok: true, id, status: "DECLINED" });
   } catch (err) {
-    console.error("PATCH /appointments/:id/status error:", err);
-    res.status(500).json({ ok: false, error: "Failed to update status" });
+    console.error("decline err:", err);
+    res.status(500).json({ ok: false, error: "DECLINE_FAILED" });
   }
 });
 
-/* doctor appointments (already fixed to use services) */
-router.get("/doctors/:id/appointments", async (req, res) => {
-  const doctorId = Number(req.params.id);
-  const scope = String(req.query.scope || "active").toLowerCase();
-
-  if (!Number.isFinite(doctorId) || doctorId <= 0) {
-    return res.status(400).json({ ok: false, error: "Invalid doctor id" });
-  }
-
-  const activeStatuses = "('PENDING','CONFIRMED','APPROVED')";
-  const historyStatuses = "('COMPLETED','DONE','FINISHED','DECLINED','CANCELLED','CANCELED')";
-  const statusList = scope === "history" ? historyStatuses : activeStatuses;
-
+/* -------- admin complete -------- */
+router.post("/admin/appointments/:id/complete", async (req, res) => {
   try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "BAD_ID" });
+
+    const [r] = await pool.query("UPDATE appointments SET status='COMPLETED' WHERE id = ?", [id]);
+    if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+
+    res.json({ ok: true, id, status: "COMPLETED" });
+  } catch (err) {
+    console.error("complete err:", err);
+    res.status(500).json({ ok: false, error: "COMPLETE_FAILED" });
+  }
+});
+
+/* -------- generic status (POST|PATCH|PUT) -------- */
+async function updateStatusHandler(req, res) {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "BAD_ID" });
+
+    const body = req.body || {};
+    let newStatus = body.status || body.action || "";
+    newStatus = String(newStatus).trim().toUpperCase();
+
+    if (newStatus === "APPROVE" || newStatus === "APPROVED") newStatus = "CONFIRMED";
+    if (newStatus === "DECLINE") newStatus = "DECLINED";
+
+    const allowed = new Set(["PENDING", "CONFIRMED", "DECLINED", "COMPLETED"]);
+    if (!allowed.has(newStatus)) return res.status(400).json({ ok: false, error: "BAD_STATUS" });
+
+    const [r] = await pool.query("UPDATE appointments SET status = ? WHERE id = ?", [
+      newStatus,
+      id,
+    ]);
+    if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+
+    res.json({ ok: true, id, status: newStatus });
+  } catch (err) {
+    console.error("status err:", err);
+    res.status(500).json({ ok: false, error: "STATUS_FAILED" });
+  }
+}
+router.post("/appointments/:id/status", updateStatusHandler);
+router.patch("/appointments/:id/status", updateStatusHandler);
+router.put("/appointments/:id/status", updateStatusHandler);
+
+/* -------- user history -------- */
+router.get("/appointments/user/history", async (req, res) => {
+  try {
+    const email = (req.query.email || "").trim().toLowerCase();
+    if (!email) return res.status(400).json({ ok: false, error: "EMAIL_REQUIRED" });
+
     const [rows] = await pool.query(
       `
       SELECT
         a.id,
-        a.full_name                              AS patient_name,
-        COALESCE(s.name, 'No service')           AS service,
-        DATE_FORMAT(a.preferred_date, '%Y-%m-%d') AS date,
-        DATE_FORMAT(a.preferred_time, '%H:%i')    AS time_start,
-        a.status,
-        a.review
+        DATE_FORMAT(a.preferred_date,'%Y-%m-%d') AS dateISO,
+        COALESCE(s.name, '') AS service,
+        a.dentist_id AS dentistId,
+        COALESCE(d.full_name, '') AS dentist,
+        UPPER(a.status) AS status
       FROM appointments a
       LEFT JOIN dentists d ON d.id = a.dentist_id
       LEFT JOIN services s ON s.id = a.procedure_id
-      WHERE a.dentist_id = ?
-        AND UPPER(a.status) IN ${statusList}
+      WHERE LOWER(a.email) = ?
+        AND UPPER(a.status) IN ('COMPLETED','DONE','FINISHED','DECLINED','CANCELLED','CANCELED')
       ORDER BY a.preferred_date DESC, a.preferred_time DESC, a.id DESC
-      LIMIT 1000
       `,
-      [doctorId]
+      [email]
     );
 
     res.json({ ok: true, items: rows });
   } catch (err) {
-    console.error("GET /doctors/:id/appointments error:", err);
-    res.status(500).json({ ok: false, error: "Failed to fetch doctor's appointments" });
+    console.error("user history err:", err);
+    res.status(500).json({ ok: false, error: "HISTORY_FAILED" });
   }
 });
 
-/* delete appointment */
-router.delete("/appointments/:id", async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id) || id <= 0)
-    return res.status(400).json({ ok: false, error: "Invalid id" });
+/* -------- user single appt (review page) -------- */
+router.get("/appointments/:id", async (req, res) => {
   try {
-    const [r] = await pool.query("DELETE FROM appointments WHERE id = ?", [id]);
-    if (r.affectedRows === 0)
-      return res.status(404).json({ ok: false, error: "Appointment not found" });
-    res.json({ ok: true });
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "BAD_ID" });
+
+    const [rows] = await pool.query(
+      `
+      SELECT
+        a.id,
+        DATE_FORMAT(a.preferred_date,'%Y-%m-%d') AS date,
+        DATE_FORMAT(a.preferred_time,'%H:%i') AS timeStart,
+        COALESCE(s.name, '') AS service,
+        COALESCE(d.full_name, '') AS doctor
+      FROM appointments a
+      LEFT JOIN dentists d ON d.id = a.dentist_id
+      LEFT JOIN services s ON s.id = a.procedure_id
+      WHERE a.id = ?
+      LIMIT 1
+      `,
+      [id]
+    );
+
+    if (!rows.length) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+    res.json(rows[0]);
   } catch (err) {
-    console.error("DELETE /appointments/:id error:", err);
-    res.status(500).json({ ok: false, error: "Failed to delete appointment" });
+    console.error("user appt err:", err);
+    res.status(500).json({ ok: false, error: "DETAIL_FAILED" });
+  }
+});
+
+/* -------- doctor history (for doctor profile) -------- */
+router.get("/doctors/:id/appointments", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "BAD_ID" });
+
+    const [rows] = await pool.query(
+      `
+      SELECT
+        a.id,
+        a.full_name AS patient_name,
+        COALESCE(s.name, 'No service') AS service,
+        DATE_FORMAT(a.preferred_date,'%Y-%m-%d') AS date,
+        DATE_FORMAT(a.preferred_time,'%H:%i') AS time_start,
+        UPPER(a.status) AS status
+      FROM appointments a
+      LEFT JOIN dentists d ON d.id = a.dentist_id
+      LEFT JOIN services s ON s.id = a.procedure_id
+      WHERE a.dentist_id = ?
+      ORDER BY a.preferred_date DESC, a.preferred_time DESC, a.id DESC
+      LIMIT 1000
+      `,
+      [id]
+    );
+
+    res.json({ ok: true, items: rows });
+  } catch (err) {
+    console.error("doctor appts err:", err);
+    res.status(500).json({ ok: false, error: "DOCTOR_APPTS_FAILED" });
+  }
+});
+
+/* -------- top services -------- */
+router.get("/admin/appointments/top-services", async (_req, res) => {
+  try {
+    const [rows] = await pool.query(
+      `
+      SELECT
+        COALESCE(s.name, 'Unknown') AS service,
+        COUNT(*) AS cnt
+      FROM appointments a
+      LEFT JOIN services s ON s.id = a.procedure_id
+      WHERE UPPER(a.status) IN ('COMPLETED','DONE','FINISHED')
+      GROUP BY COALESCE(s.name, 'Unknown')
+      ORDER BY cnt DESC
+      LIMIT 3
+      `
+    );
+    const total = rows.reduce((n, r) => n + r.cnt, 0) || 1;
+    const items = rows.map((r) => ({
+      name: r.service,
+      percentage: Math.round((r.cnt / total) * 100),
+    }));
+    res.json({ ok: true, items });
+  } catch (err) {
+    console.error("top services err:", err);
+    res.status(500).json({ ok: false, error: "TOP_SERVICES_FAILED" });
   }
 });
 

@@ -49,17 +49,21 @@ const reviewsRouter = require("./routes/reviews");
 const adminPatientsRouter = require("./routes/adminPatients");
 const changePasswordRouter = require("./routes/change-password");
 const servicesRouter = require("./routes/services");
-const adminRouter = require("./routes/admin"); // <— your file
+const adminRouter = require("./routes/admin");
 
 app.use("/api/auth", authRouter);
 app.use("/api/reset-admin", resetAdminRouter);
 app.use("/api/admin/patients", adminPatientsRouter);
-app.use("/api", appointmentsRouter);
 app.use("/api/doctors", doctorsRouter);
 app.use("/api", reviewsRouter);
 app.use("/api/change-password", changePasswordRouter);
 app.use("/api/services", servicesRouter);
-app.use("/api/admin", adminRouter); // <— mount here
+app.use("/api/admin", adminRouter);
+
+/* main appointments routes under /api */
+app.use("/api", appointmentsRouter);
+/* legacy paths without /api (for doctor profile calling /doctors/:id/appointments and for /appointments/:id/status) */
+app.use("/", appointmentsRouter);
 
 app.use((req, res) => res.status(404).json({ ok: false, error: "NOT_FOUND" }));
 
