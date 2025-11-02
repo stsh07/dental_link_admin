@@ -1,7 +1,7 @@
 // src/components/LoginPage.tsx
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import dentalLinkLogo from "../assets/dentalLink_logo.svg";
 
 const API_BASE =
@@ -12,6 +12,7 @@ const STORAGE_KEY = "dental-link-user";
 
 const LoginPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [showPassword, setShowPassword] = useState(false);
   const [formData, setFormData] = useState({
@@ -19,7 +20,17 @@ const LoginPage: React.FC = () => {
     password: "",
   });
   const [error, setError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const message = params.get("message");
+    if (message) {
+      setSuccessMessage(decodeURIComponent(message));
+      navigate(location.pathname, { replace: true });
+    }
+  }, [location.pathname, location.search, navigate]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
@@ -28,6 +39,7 @@ const LoginPage: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setSuccessMessage("");
     setLoading(true);
 
     try {
@@ -92,6 +104,9 @@ const LoginPage: React.FC = () => {
               {error && (
                 <div className="mb-4 text-red-500 text-sm font-medium">{error}</div>
               )}
+              {!error && successMessage && (
+                <div className="mb-4 text-green-600 text-sm font-medium">{successMessage}</div>
+              )}
 
               <form onSubmit={handleSubmit} className="space-y-6">
                 <div>
@@ -141,9 +156,9 @@ const LoginPage: React.FC = () => {
                     </button>
                   </div>
                   <div className="mt-2 text-right">
-                    <a href="#" className="text-sm text-gray-500 hover:text-[#30B8DE]">
+                    <Link to="/forgot-password" className="text-sm text-gray-500 hover:text-[#30B8DE]">
                       Forgot password?
-                    </a>
+                    </Link>
                   </div>
                 </div>
 

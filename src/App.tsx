@@ -10,6 +10,9 @@ import Reviews from "./components/Reviews";
 import Doctors from "./components/Doctors";
 import DoctorProfile from "./components/DoctorProfile";
 import ChangePassword from "./components/ChangePassword";
+import ForgotPasswordRequest from "./components/forgot-password/ForgotPasswordRequest";
+import VerifyResetCode from "./components/forgot-password/verify/VerifyResetCode";
+import ResetPasswordPage from "./components/forgot-password/reset/ResetPasswordPage";
 
 export default function App() {
   return (
@@ -28,6 +31,9 @@ export default function App() {
       <Route path="/services" element={<Services />} />
       <Route path="/reviews" element={<Reviews />} />
       <Route path="/change-password" element={<ChangePassword />} />
+      <Route path="/forgot-password" element={<ForgotPasswordRequest />} />
+      <Route path="/forgot-password/verify" element={<VerifyResetCode />} />
+      <Route path="/forgot-password/reset" element={<ResetPasswordPage />} />
 
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
