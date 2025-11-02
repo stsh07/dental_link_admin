@@ -58,7 +58,7 @@ router.get("/admin/appointments", async (req, res) => {
   }
 });
 
-/* list all */
+/* list all (old) */
 router.get("/appointments", async (_req, res) => {
   try {
     const [rows] = await pool.query(
@@ -83,6 +83,49 @@ router.get("/appointments", async (_req, res) => {
   } catch (err) {
     console.error("GET /appointments error:", err);
     res.status(500).json({ ok: false, error: "Failed to fetch appointments" });
+  }
+});
+
+/* user history (by email) */
+router.get("/appointments/user/history", async (req, res) => {
+  const email = String(req.query.email || "").trim();
+  if (!email) {
+    // front-end expects 200
+    return res.json({ ok: true, items: [] });
+  }
+
+  try {
+    const [rows] = await pool.query(
+      `
+      SELECT
+        a.id,
+        COALESCE(s.name, 'No service')                AS service,
+        DATE_FORMAT(a.preferred_date, '%Y-%m-%d')     AS dateISO,
+        a.dentist_id                                  AS dentistId,
+        d.full_name                                   AS dentist
+      FROM appointments a
+      LEFT JOIN services s ON s.id = a.procedure_id
+      LEFT JOIN dentists d ON d.id = a.dentist_id
+      WHERE LOWER(a.email) = LOWER(?)
+        AND TRIM(UPPER(a.status)) IN ('COMPLETED','DONE','FINISHED')
+      ORDER BY a.preferred_date DESC, a.preferred_time DESC, a.id DESC
+      `,
+      [email]
+    );
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      service: r.service || "",
+      dateISO: r.dateISO || "",
+      dentistId: r.dentistId ? Number(r.dentistId) : 0,
+      dentist: r.dentist || "",
+    }));
+
+    res.json({ ok: true, items });
+  } catch (err) {
+    console.error("GET /appointments/user/history error:", err);
+    // still send 200 so your Next page won’t blow up
+    res.json({ ok: true, items: [] });
   }
 });
 
@@ -122,7 +165,8 @@ router.get("/appointments/today", async (_req, res) => {
 /* single */
 router.get("/appointments/:id", async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ ok: false, error: "Invalid id" });
+  if (!Number.isFinite(id) || id <= 0)
+    return res.status(400).json({ ok: false, error: "Invalid id" });
   try {
     const [rows] = await pool.query(
       `
@@ -146,7 +190,8 @@ router.get("/appointments/:id", async (req, res) => {
       `,
       [id]
     );
-    if (rows.length === 0) return res.status(404).json({ ok: false, error: "Appointment not found" });
+    if (rows.length === 0)
+      return res.status(404).json({ ok: false, error: "Appointment not found" });
     res.json({ ok: true, data: rows[0] });
   } catch (err) {
     console.error("GET /appointments/:id error:", err);
@@ -200,12 +245,14 @@ router.post("/appointments", async (req, res) => {
 router.patch("/appointments/:id/status", async (req, res) => {
   const id = Number(req.params.id);
   const { status } = req.body;
-  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ ok: false, error: "Invalid id" });
+  if (!Number.isFinite(id) || id <= 0)
+    return res.status(400).json({ ok: false, error: "Invalid id" });
   if (!status) return res.status(400).json({ ok: false, error: "Status is required" });
 
   try {
     const [r] = await pool.query("UPDATE appointments SET status = ? WHERE id = ?", [status, id]);
-    if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "Appointment not found" });
+    if (r.affectedRows === 0)
+      return res.status(404).json({ ok: false, error: "Appointment not found" });
     res.json({ ok: true });
   } catch (err) {
     console.error("PATCH /appointments/:id/status error:", err);
@@ -213,60 +260,42 @@ router.patch("/appointments/:id/status", async (req, res) => {
   }
 });
 
-/* doctor appointments — FIXED (dentist_id only) */
+/* doctor appointments (already fixed to use services) */
 router.get("/doctors/:id/appointments", async (req, res) => {
   const doctorId = Number(req.params.id);
+  const scope = String(req.query.scope || "active").toLowerCase();
+
   if (!Number.isFinite(doctorId) || doctorId <= 0) {
     return res.status(400).json({ ok: false, error: "Invalid doctor id" });
   }
 
-  const scope = (req.query.scope || "active").toString().toLowerCase();
-  const ACTIVE = ["PENDING", "CONFIRMED", "APPROVED"];
-  const HISTORY = ["COMPLETED", "DONE", "FINISHED", "DECLINED", "CANCELLED", "CANCELED"];
-
-  let wanted;
-  if (scope === "history") wanted = HISTORY;
-  else if (scope === "all") wanted = ACTIVE.concat(HISTORY);
-  else wanted = ACTIVE;
-
-  const placeholders = wanted.map(() => "?").join(",");
-  const statusSql = wanted.length ? `AND UPPER(a.status) IN (${placeholders})` : "";
+  const activeStatuses = "('PENDING','CONFIRMED','APPROVED')";
+  const historyStatuses = "('COMPLETED','DONE','FINISHED','DECLINED','CANCELLED','CANCELED')";
+  const statusList = scope === "history" ? historyStatuses : activeStatuses;
 
   try {
     const [rows] = await pool.query(
       `
       SELECT
         a.id,
-        a.full_name      AS patient_name,
-        COALESCE(s.name, '')               AS service,
+        a.full_name                              AS patient_name,
+        COALESCE(s.name, 'No service')           AS service,
         DATE_FORMAT(a.preferred_date, '%Y-%m-%d') AS date,
         DATE_FORMAT(a.preferred_time, '%H:%i')    AS time_start,
-        a.status
+        a.status,
+        a.review
       FROM appointments a
       LEFT JOIN dentists d ON d.id = a.dentist_id
       LEFT JOIN services s ON s.id = a.procedure_id
-      WHERE
-        a.dentist_id = ?
-        ${statusSql}
+      WHERE a.dentist_id = ?
+        AND UPPER(a.status) IN ${statusList}
       ORDER BY a.preferred_date DESC, a.preferred_time DESC, a.id DESC
       LIMIT 1000
       `,
-      wanted.length
-        ? [doctorId, ...wanted.map((s) => s.toUpperCase())]
-        : [doctorId]
+      [doctorId]
     );
 
-    res.json({
-      ok: true,
-      items: rows.map((r) => ({
-        id: r.id,
-        patient_name: r.patient_name || "",
-        service: r.service || "",
-        date: r.date || "",
-        time_start: r.time_start || "",
-        status: (r.status || "").toUpperCase(),
-      })),
-    });
+    res.json({ ok: true, items: rows });
   } catch (err) {
     console.error("GET /doctors/:id/appointments error:", err);
     res.status(500).json({ ok: false, error: "Failed to fetch doctor's appointments" });
@@ -276,10 +305,12 @@ router.get("/doctors/:id/appointments", async (req, res) => {
 /* delete appointment */
 router.delete("/appointments/:id", async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ ok: false, error: "Invalid id" });
+  if (!Number.isFinite(id) || id <= 0)
+    return res.status(400).json({ ok: false, error: "Invalid id" });
   try {
     const [r] = await pool.query("DELETE FROM appointments WHERE id = ?", [id]);
-    if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "Appointment not found" });
+    if (r.affectedRows === 0)
+      return res.status(404).json({ ok: false, error: "Appointment not found" });
     res.json({ ok: true });
   } catch (err) {
     console.error("DELETE /appointments/:id error:", err);
