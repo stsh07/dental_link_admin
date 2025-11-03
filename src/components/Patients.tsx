@@ -4,6 +4,8 @@ import Sidebar from "./Sidebar";
 import { BellIcon, SearchIcon, ChevronRight } from "lucide-react";
 import profile from "../assets/profile.svg";
 import PatientsPopup from "../popups/PatientsPopup";
+import AppointmentPopup, { AppointmentDetail } from "../popups/AppointmentPopup";
+import NotificationPopup, { NotificationItem } from "../popups/notification";
 
 type PatientRow = {
   id: number;
@@ -22,13 +24,16 @@ type ApiResponse = {
   items: PatientRow[];
 };
 
+/** Extend NotificationItem to carry the appointment id */
+type NotifWithApptId = NotificationItem & { apptId?: number | null };
+
 const API_BASE =
   (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/+$/, "") ||
   "http://localhost:4002";
 
 const prettyDate = (ymd?: string | null) => {
   if (!ymd) return "-";
-  const [y, m, d] = ymd.split("-").map(Number);
+  const [y, m, d] = (ymd || "").split("-").map(Number);
   const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
   return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "2-digit" });
 };
@@ -58,9 +63,9 @@ export default function Patients(): JSX.Element {
       const json: ApiResponse = await res.json();
       if (!res.ok) throw new Error((json as any).error || "Failed to load patients");
       setRows(json.items || []);
-    } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        setErr(e?.message || "Failed to load patients");
+    } catch (e: unknown) {
+      if ((e as any)?.name !== "AbortError") {
+        setErr((e as any)?.message || "Failed to load patients");
         setRows([]);
       }
     } finally {
@@ -88,7 +93,7 @@ export default function Patients(): JSX.Element {
   const filteredRows = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return rows;
-    return rows.filter((p) =>
+    return rows.filter((p: PatientRow) =>
       (p.name || "").toLowerCase().includes(q) ||
       (p.email || "").toLowerCase().includes(q) ||
       (p.phone || "").toLowerCase().includes(q)
@@ -97,6 +102,168 @@ export default function Patients(): JSX.Element {
 
   const totalPatients = filteredRows.length;
 
+  /* ---------- Notifications (shared UX) ---------- */
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotifWithApptId[]>([]);
+  const notifWrapRef = useRef<HTMLDivElement | null>(null);
+
+  const fetchNotifications = async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/notifications?limit=50`, { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        setNotifications([]);
+        return;
+      }
+      setNotifications((j.items || []) as NotifWithApptId[]);
+    } catch {
+      setNotifications([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchNotifications();
+    const idTimer = setInterval(fetchNotifications, 10000);
+    return () => clearInterval(idTimer);
+  }, []);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const el = notifWrapRef.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) setNotifOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const removeNotifForAppt = (apptId: number) => {
+    setNotifications((prev) => prev.filter((n) => n.apptId !== apptId));
+  };
+
+  /* ---------- Appointment popup & actions (opened from notifications) ---------- */
+  const [apptOpen, setApptOpen] = useState(false);
+  const [apptData, setApptData] = useState<AppointmentDetail | null>(null);
+  const [apptActionLoading, setApptActionLoading] = useState(false);
+
+  const fetchAppointmentDetail = async (apptId: number): Promise<Partial<AppointmentDetail>> => {
+    const res = await fetch(`${API_BASE}/api/admin/appointments/${apptId}`, { cache: "no-store" });
+    if (!res.ok) return {};
+    const j = await res.json();
+    return {
+      patientName: j.patientName ?? j.full_name ?? "",
+      email: j.email ?? null,
+      age: j.age ?? null,
+      gender: j.gender ?? null,
+      phone: j.phone ?? null,
+      address: j.address ?? null,
+      notes: j.notes ?? null,
+      doctor: j.doctor ?? j.doctorName ?? "",
+      date: String(j.date ?? j.preferredDate ?? "").slice(0, 10),
+      timeStart: String(j.timeStart ?? j.preferredTime ?? "").slice(0, 5),
+      service: j.service ?? j.serviceName ?? j.procedureName ?? "",
+      status: String(j.status ?? "PENDING").toUpperCase() as AppointmentDetail["status"],
+    };
+  };
+
+  const patchStatus = async (apptId: number, status: AppointmentDetail["status"]) => {
+    const res = await fetch(`${API_BASE}/api/appointments/${apptId}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error((j as any).error || "update failed");
+    }
+  };
+
+  const afterSuccessfulAction = (apptId: number) => {
+    removeNotifForAppt(apptId);
+    fetchNotifications();
+    window.dispatchEvent(new Event("appointments-updated"));
+    window.dispatchEvent(new Event("patients-updated"));
+  };
+
+  const handleApprove = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "CONFIRMED");
+      setApptOpen(false);
+      afterSuccessfulAction(apptData.id);
+    } catch (e: unknown) {
+      alert((e as any)?.message || "Failed to approve");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "DECLINED");
+      setApptOpen(false);
+      afterSuccessfulAction(apptData.id);
+    } catch (e: unknown) {
+      alert((e as any)?.message || "Failed to decline");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleComplete = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "COMPLETED");
+      setApptOpen(false);
+      afterSuccessfulAction(apptData.id);
+    } catch (e: unknown) {
+      alert((e as any)?.message || "Failed to complete");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  // From notifications: open AppointmentPopup and mark-as-read
+  const handleViewFromNotif = async (notifId: number, apptId?: number | null) => {
+    if (!apptId) return;
+    setNotifOpen(false);
+
+    // placeholder while loading details
+    setApptData({
+      id: apptId,
+      patientName: "",
+      email: null,
+      age: null,
+      gender: null,
+      phone: null,
+      address: null,
+      notes: null,
+      doctor: "",
+      date: "",
+      timeStart: "",
+      service: "",
+      status: "PENDING",
+    });
+    setApptOpen(true);
+
+    try {
+      const detail = await fetchAppointmentDetail(apptId);
+      setApptData((prev) => (prev ? ({ ...prev, ...detail } as AppointmentDetail) : prev));
+      // best-effort mark-as-read
+      try {
+        await fetch(`${API_BASE}/api/notifications/${notifId}/read`, { method: "PATCH" });
+        removeNotifForAppt(apptId);
+      } catch {}
+    } catch {}
+  };
+
+  /* ---------- Detail route (single patient) ---------- */
   if (isDetail) {
     return (
       <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
@@ -104,16 +271,50 @@ export default function Patients(): JSX.Element {
         <main className="flex-1 min-w-0 flex flex-col">
           <header className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
             <h1 className="text-black text-[28px] font-semibold">Patients</h1>
-            <div />
+            {/* Notifications in detail page too */}
+            <div ref={notifWrapRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setNotifOpen((s) => !s)}
+                className="relative p-2 rounded hover:bg-gray-100"
+                aria-label="Open notifications"
+              >
+                <BellIcon className="w-5 h-5 text-gray-600" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-none">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              <NotificationPopup
+                open={notifOpen}
+                onClose={() => setNotifOpen(false)}
+                items={notifications}
+                onView={handleViewFromNotif} // (notifId, apptId)
+              />
+            </div>
           </header>
           <div className="flex-1 overflow-y-auto px-8 pt-4 pb-8">
             <PatientsPopup patientId={Number(id)} />
           </div>
+
+          {/* Appointment popup (opened from notifications) */}
+          <AppointmentPopup
+            open={apptOpen}
+            data={apptData}
+            onClose={() => setApptOpen(false)}
+            onApprove={handleApprove}
+            onDecline={handleDecline}
+            onComplete={handleComplete}
+            actionLoading={apptActionLoading}
+          />
         </main>
       </div>
     );
   }
 
+  /* ---------- List route ---------- */
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
@@ -130,7 +331,30 @@ export default function Patients(): JSX.Element {
                 className="border-0 outline-none bg-transparent text-sm text-gray-700 placeholder:text-gray-400 h-auto p-0 w-full"
               />
             </div>
-            <BellIcon className="w-5 h-5 text-gray-600" />
+
+            {/* Notifications dropdown */}
+            <div ref={notifWrapRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setNotifOpen((s) => !s)}
+                className="relative p-2 rounded hover:bg-gray-100"
+                aria-label="Open notifications"
+              >
+                <BellIcon className="w-5 h-5 text-gray-600" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-none">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              <NotificationPopup
+                open={notifOpen}
+                onClose={() => setNotifOpen(false)}
+                items={notifications}
+                onView={handleViewFromNotif} // (notifId, apptId)
+              />
+            </div>
           </div>
         </header>
 
@@ -173,7 +397,7 @@ export default function Patients(): JSX.Element {
                 </thead>
 
                 <tbody>
-                  {filteredRows.map((p) => (
+                  {filteredRows.map((p: PatientRow) => (
                     <tr key={p.id} className="border-b border-gray-200 hover:bg-gray-50">
                       <td className="py-3 pl-8 text-sm font-medium text-gray-900">
                         <div className="flex items-center gap-3">
@@ -217,6 +441,17 @@ export default function Patients(): JSX.Element {
           {/* End Table */}
         </div>
       </main>
+
+      {/* Appointment popup (opened from notifications) */}
+      <AppointmentPopup
+        open={apptOpen}
+        data={apptData}
+        onClose={() => setApptOpen(false)}
+        onApprove={handleApprove}
+        onDecline={handleDecline}
+        onComplete={handleComplete}
+        actionLoading={apptActionLoading}
+      />
     </div>
   );
 }

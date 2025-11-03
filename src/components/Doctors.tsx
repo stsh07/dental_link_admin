@@ -1,15 +1,28 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "./Sidebar";
-import { Plus, Bell as BellIcon, Search as SearchIcon, Calendar, Users } from "lucide-react";
+import {
+  Plus,
+  Bell as BellIcon,
+  Search as SearchIcon,
+  Calendar,
+  Users,
+} from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import Modal from "./modal";
 import AddDoctorPopup from "../popups/addDoctor";
 
-/* helpers */
+import NotificationPopup, { NotificationItem } from "../popups/notification";
+import AppointmentPopup, { AppointmentDetail } from "../popups/AppointmentPopup";
+
+/* --------------------------------------------------
+   Helpers / Config
+-------------------------------------------------- */
 function joinUrl(base: string, path: string) {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
-const API_BASE = (import.meta as any).env?.VITE_API_URL?.toString() || "http://localhost:4002";
+const API_BASE =
+  (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/+$/, "") ||
+  "http://localhost:4002";
 
 type DoctorRow = {
   id: number;
@@ -63,6 +76,9 @@ function Avatar({ name, photo }: { name: string; photo?: string | null }) {
   );
 }
 
+/** Extend NotificationItem to carry the appointment id */
+type NotifWithApptId = NotificationItem & { apptId?: number | null };
+
 const Doctors: React.FC = () => {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<DoctorRow[]>([]);
@@ -93,7 +109,10 @@ const Doctors: React.FC = () => {
       setLoading(true);
       setErr(null);
       const ctrl = new AbortController();
-      const [d, c] = await Promise.all([loadDoctors(ctrl.signal), loadActiveCounts(ctrl.signal).catch(() => ({}))]);
+      const [d, c] = await Promise.all([
+        loadDoctors(ctrl.signal),
+        loadActiveCounts(ctrl.signal).catch(() => ({})),
+      ]);
       setRows(d);
       setCounts(c);
     } catch (e: any) {
@@ -105,7 +124,9 @@ const Doctors: React.FC = () => {
     }
   }
 
-  useEffect(() => { loadAll(); }, []);
+  useEffect(() => {
+    loadAll();
+  }, []);
   useEffect(() => {
     const onAppt = () => loadAll();
     const onDocs = () => loadAll();
@@ -123,6 +144,169 @@ const Doctors: React.FC = () => {
     if (!q) return rows;
     return rows.filter((d) => (d.full_name || "").toLowerCase().includes(q));
   }, [rows, query]);
+
+  /* --------------------------------------------------
+     Notifications (same pattern as Dashboard/Reviews)
+  -------------------------------------------------- */
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotifWithApptId[]>([]);
+  const notifWrapRef = useRef<HTMLDivElement | null>(null);
+
+  const fetchNotifications = async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/notifications?limit=50`, { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        setNotifications([]);
+        return;
+      }
+      setNotifications((j.items || []) as NotifWithApptId[]);
+    } catch {
+      setNotifications([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchNotifications();
+    const id = setInterval(fetchNotifications, 10000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const el = notifWrapRef.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) setNotifOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  /* --------------------------------------------------
+     Appointment popup + actions (approve/decline/complete)
+  -------------------------------------------------- */
+  const [apptOpen, setApptOpen] = useState(false);
+  const [apptData, setApptData] = useState<AppointmentDetail | null>(null);
+  const [apptActionLoading, setApptActionLoading] = useState(false);
+
+  const removeNotifForAppt = (apptId: number) => {
+    setNotifications((prev) => prev.filter((n) => n.apptId !== apptId));
+  };
+
+  const fetchAppointmentDetail = async (id: number): Promise<Partial<AppointmentDetail>> => {
+    const res = await fetch(`${API_BASE}/api/admin/appointments/${id}`, { cache: "no-store" });
+    if (!res.ok) return {};
+    const j = await res.json();
+    return {
+      patientName: j.patientName ?? j.full_name ?? "",
+      email: j.email ?? null,
+      age: j.age ?? null,
+      gender: j.gender ?? null,
+      phone: j.phone ?? null,
+      address: j.address ?? null,
+      notes: j.notes ?? null,
+      doctor: j.doctor ?? j.doctorName ?? "",
+      date: String(j.date ?? j.preferredDate ?? "").slice(0, 10),
+      timeStart: String(j.timeStart ?? j.preferredTime ?? "").slice(0, 5),
+      service: j.service ?? j.serviceName ?? j.procedureName ?? "",
+      status: String(j.status ?? "PENDING").toUpperCase() as AppointmentDetail["status"],
+    };
+  };
+
+  const patchStatus = async (id: number, status: AppointmentDetail["status"]) => {
+    const res = await fetch(`${API_BASE}/api/appointments/${id}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.error || "update failed");
+    }
+  };
+
+  const afterSuccessfulAction = (apptId: number) => {
+    setApptOpen(false);
+    removeNotifForAppt(apptId);
+    window.dispatchEvent(new Event("appointments-updated"));
+    window.dispatchEvent(new Event("patients-updated"));
+    fetchNotifications();
+  };
+
+  const handleApprove = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "CONFIRMED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to approve");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "DECLINED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to decline");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleComplete = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "COMPLETED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to complete");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  // Open from notifications
+  const handleViewFromNotif = async (notifId: number, apptId?: number | null) => {
+    if (!apptId) return;
+
+    setNotifOpen(false);
+
+    // placeholder while loading details
+    setApptData({
+      id: apptId,
+      patientName: "",
+      email: null,
+      age: null,
+      gender: null,
+      phone: null,
+      address: null,
+      notes: null,
+      doctor: "",
+      date: "",
+      timeStart: "",
+      service: "",
+      status: "PENDING",
+    });
+    setApptOpen(true);
+
+    try {
+      const detail = await fetchAppointmentDetail(apptId);
+      setApptData((prev) => (prev ? ({ ...prev, ...detail } as AppointmentDetail) : prev));
+      try {
+        await fetch(`${API_BASE}/api/notifications/${notifId}/read`, { method: "PATCH" });
+        removeNotifForAppt(apptId);
+      } catch {}
+    } catch {}
+  };
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
@@ -142,7 +326,30 @@ const Doctors: React.FC = () => {
                 className="border-0 outline-none bg-transparent text-sm text-gray-700 placeholder:text-gray-400 h-auto p-0 w-full"
               />
             </div>
-            <BellIcon className="w-5 h-5 text-gray-600" />
+
+            {/* Notifications dropdown (same pattern) */}
+            <div ref={notifWrapRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setNotifOpen((s) => !s)}
+                className="relative p-2 rounded hover:bg-gray-100"
+                aria-label="Open notifications"
+              >
+                <BellIcon className="w-5 h-5 text-gray-600" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-none">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              <NotificationPopup
+                open={notifOpen}
+                onClose={() => setNotifOpen(false)}
+                items={notifications}
+                onView={handleViewFromNotif} // (notifId, apptId)
+              />
+            </div>
           </div>
         </header>
 
@@ -222,6 +429,17 @@ const Doctors: React.FC = () => {
       >
         <AddDoctorPopup />
       </Modal>
+
+      {/* Appointment popup (opened from notifications) */}
+      <AppointmentPopup
+        open={apptOpen}
+        data={apptData}
+        onClose={() => setApptOpen(false)}
+        onApprove={handleApprove}
+        onDecline={handleDecline}
+        onComplete={handleComplete}
+        actionLoading={apptActionLoading}
+      />
     </div>
   );
 };

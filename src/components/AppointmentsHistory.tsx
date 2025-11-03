@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BellIcon, SearchIcon, ArrowUpDownIcon } from "lucide-react";
 import Sidebar from "./Sidebar";
 import profile from "../assets/profile.svg";
+import AppointmentPopup, { AppointmentDetail } from "../popups/AppointmentPopup";
+import NotificationPopup, { NotificationItem } from "../popups/notification";
 
 type Row = {
   id: number;
@@ -15,7 +17,10 @@ type Row = {
 type TabKey = "all" | "completed" | "declined";
 type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
 
-/* time */
+/** Extend NotificationItem to carry the appointment id */
+type NotifWithApptId = NotificationItem & { apptId?: number | null };
+
+/* ---------- time helpers ---------- */
 const parseHHMM = (val?: string | null): { h: number; m: number } | null => {
   if (!val || typeof val !== "string") return null;
   const m = val.match(/^(\d{1,2}):(\d{2})$/);
@@ -50,7 +55,7 @@ const prettyDate = (ymd?: string | null) => {
 const badgeClass = (s: Row["status"]) =>
   s === "DECLINED" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-600";
 
-/* normalizer */
+/* ---------- normalizer ---------- */
 const normalizeItem = (raw: any): Row => {
   const id = Number(raw.id ?? 0);
   const patientName = String(raw.patientName ?? raw.full_name ?? raw.name ?? "").trim();
@@ -81,16 +86,16 @@ export default function AppointmentsHistory(): JSX.Element {
     try {
       const u = new URL("http://localhost:4002/api/admin/appointments");
       u.searchParams.set("page","1");
-      u.searchParams.set("pageSize","500"); // no backend search; client-side filter
+      u.searchParams.set("pageSize","500"); // client-side filter
       const res = await fetch(u.toString(), { cache: "no-store", signal: ac.signal });
       const json: ApiResponse = await res.json();
 
-      const all = (json.items || []).map(normalizeItem)
-        .filter(x => x.status === "COMPLETED" || x.status === "DECLINED");
+      const items: Row[] = (json.items || []).map(normalizeItem);
+      const all: Row[] = items.filter((x: Row) => x.status === "COMPLETED" || x.status === "DECLINED");
 
       setRows(all);
-    } catch (e) {
-      if ((e as any).name !== "AbortError") setRows([]);
+    } catch (e: unknown) {
+      if ((e as any)?.name !== "AbortError") setRows([]);
     } finally {
       setLoading(false);
     }
@@ -121,17 +126,17 @@ export default function AppointmentsHistory(): JSX.Element {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  /* ------- client-side search like Reviews.tsx ------- */
-  const filteredByTab = useMemo(() => {
-    if (tab === "completed") return rows.filter(x => x.status === "COMPLETED");
-    if (tab === "declined")  return rows.filter(x => x.status === "DECLINED");
+  /* ------- client-side search + tabs ------- */
+  const filteredByTab: Row[] = useMemo(() => {
+    if (tab === "completed") return rows.filter((x: Row) => x.status === "COMPLETED");
+    if (tab === "declined")  return rows.filter((x: Row) => x.status === "DECLINED");
     return rows;
   }, [rows, tab]);
 
-  const filtered = useMemo(() => {
+  const filtered: Row[] = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return filteredByTab;
-    return filteredByTab.filter(r =>
+    return filteredByTab.filter((r: Row) =>
       (r.patientName || "").toLowerCase().includes(q) ||
       (r.doctor || "").toLowerCase().includes(q) ||
       (r.service || "").toLowerCase().includes(q) ||
@@ -141,9 +146,9 @@ export default function AppointmentsHistory(): JSX.Element {
     );
   }, [filteredByTab, query]);
 
-  const sortedRows = useMemo(() => {
+  const sortedRows: Row[] = useMemo(() => {
     const copy = [...filtered];
-    copy.sort((a, b) => {
+    copy.sort((a: Row, b: Row) => {
       const aKey = `${a.date} ${a.timeStart}`;
       const bKey = `${b.date} ${b.timeStart}`;
       return sortAsc ? aKey.localeCompare(bKey) : bKey.localeCompare(aKey);
@@ -151,6 +156,169 @@ export default function AppointmentsHistory(): JSX.Element {
     return copy;
   }, [filtered, sortAsc]);
 
+  /* ---------- Appointment popup (to open from notifications) ---------- */
+  const [apptOpen, setApptOpen] = useState(false);
+  const [apptData, setApptData] = useState<AppointmentDetail | null>(null);
+  const [apptActionLoading, setApptActionLoading] = useState(false);
+
+  const fetchAppointmentDetail = async (id: number): Promise<Partial<AppointmentDetail>> => {
+    const res = await fetch(`http://localhost:4002/api/admin/appointments/${id}`, { cache: "no-store" });
+    if (!res.ok) return {};
+    const j = await res.json();
+    return {
+      patientName: j.patientName ?? j.full_name ?? "",
+      email: j.email ?? null,
+      age: j.age ?? null,
+      gender: j.gender ?? null,
+      phone: j.phone ?? null,
+      address: j.address ?? null,
+      notes: j.notes ?? null,
+      doctor: j.doctor ?? j.doctorName ?? "",
+      date: String(j.date ?? j.preferredDate ?? "").slice(0, 10),
+      timeStart: String(j.timeStart ?? j.preferredTime ?? "").slice(0, 5),
+      service: j.service ?? j.serviceName ?? j.procedureName ?? "",
+      status: String(j.status ?? "PENDING").toUpperCase() as AppointmentDetail["status"],
+    };
+  };
+
+  const patchStatus = async (id: number, status: AppointmentDetail["status"]) => {
+    const res = await fetch(`http://localhost:4002/api/appointments/${id}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error((j as any).error || "update failed");
+    }
+  };
+
+  const afterSuccessfulAction = () => {
+    // Refresh notifications + table
+    fetchNotifications();
+    window.dispatchEvent(new Event("appointments-updated"));
+    window.dispatchEvent(new Event("patients-updated"));
+    load();
+  };
+
+  const handleApprove = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "CONFIRMED");
+      setApptOpen(false);
+      afterSuccessfulAction();
+    } catch (e: unknown) {
+      alert((e as any)?.message || "Failed to approve");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "DECLINED");
+      setApptOpen(false);
+      afterSuccessfulAction(); // appears in history
+    } catch (e: unknown) {
+      alert((e as any)?.message || "Failed to decline");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleComplete = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "COMPLETED");
+      setApptOpen(false);
+      afterSuccessfulAction(); // appears in history
+    } catch (e: unknown) {
+      alert((e as any)?.message || "Failed to complete");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  /* ---------- Notifications (same UX as Dashboard/Active) ---------- */
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotifWithApptId[]>([]);
+  const notifWrapRef = useRef<HTMLDivElement | null>(null);
+
+  const fetchNotifications = async () => {
+    try {
+      const r = await fetch("http://localhost:4002/api/notifications?limit=50", { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        setNotifications([]);
+        return;
+      }
+      setNotifications((j.items || []) as NotifWithApptId[]);
+    } catch {
+      setNotifications([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchNotifications();
+    const id = setInterval(fetchNotifications, 10000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const el = notifWrapRef.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) setNotifOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const removeNotifForAppt = (apptId: number) => {
+    setNotifications((prev) => prev.filter((n) => n.apptId !== apptId));
+  };
+
+  // From notifications: open AppointmentPopup and mark-as-read
+  const handleViewFromNotif = async (notifId: number, apptId?: number | null) => {
+    if (!apptId) return;
+    setNotifOpen(false);
+
+    // Placeholder while loading
+    setApptData({
+      id: apptId,
+      patientName: "",
+      email: null,
+      age: null,
+      gender: null,
+      phone: null,
+      address: null,
+      notes: null,
+      doctor: "",
+      date: "",
+      timeStart: "",
+      service: "",
+      status: "PENDING",
+    });
+    setApptOpen(true);
+
+    try {
+      const detail = await fetchAppointmentDetail(apptId);
+      setApptData((prev) => (prev ? ({ ...prev, ...detail } as AppointmentDetail) : prev));
+      // best-effort mark-as-read
+      try {
+        await fetch(`http://localhost:4002/api/notifications/${notifId}/read`, { method: "PATCH" });
+        removeNotifForAppt(apptId);
+      } catch {}
+    } catch {}
+  };
+
+  /* ---------- UI ---------- */
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
@@ -169,7 +337,30 @@ export default function AppointmentsHistory(): JSX.Element {
                 className="border-0 outline-none bg-transparent text-sm text-gray-700 placeholder:text-gray-400 h-auto p-0 w-full"
               />
             </div>
-            <BellIcon className="w-5 h-5 text-gray-600" />
+
+            {/* Notifications dropdown */}
+            <div ref={notifWrapRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setNotifOpen((s) => !s)}
+                className="relative p-2 rounded hover:bg-gray-100"
+                aria-label="Open notifications"
+              >
+                <BellIcon className="w-5 h-5 text-gray-600" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-none">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              <NotificationPopup
+                open={notifOpen}
+                onClose={() => setNotifOpen(false)}
+                items={notifications}
+                onView={handleViewFromNotif} // (notifId, apptId)
+              />
+            </div>
           </div>
         </header>
 
@@ -250,7 +441,7 @@ export default function AppointmentsHistory(): JSX.Element {
                 </thead>
 
                 <tbody>
-                  {sortedRows.map(row => {
+                  {sortedRows.map((row: Row) => {
                     const start = to12hSafe(row.timeStart);
                     const endHM = addMinutesSafe(row.timeStart, 120);
                     const end = endHM ? to12hSafe(endHM) : "—";
@@ -288,6 +479,17 @@ export default function AppointmentsHistory(): JSX.Element {
           {/* End Table */}
         </div>
       </main>
+
+      {/* Appointment popup (opened from notifications) */}
+      <AppointmentPopup
+        open={apptOpen}
+        data={apptData}
+        onClose={() => setApptOpen(false)}
+        onApprove={handleApprove}
+        onDecline={handleDecline}
+        onComplete={handleComplete}
+        actionLoading={apptActionLoading}
+      />
     </div>
   );
 }

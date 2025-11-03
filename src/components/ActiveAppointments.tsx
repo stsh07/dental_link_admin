@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import profile from "../assets/profile.svg";
 import AppointmentPopup, { AppointmentDetail } from "../popups/AppointmentPopup";
+import NotificationPopup, { NotificationItem } from "../popups/notification";
 
 type TabKey = "all" | "pending" | "approved";
 
@@ -19,6 +20,10 @@ type ApiAppointment = {
 
 type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
 
+/** Notifications: extend to ensure apptId is present */
+type NotifWithApptId = NotificationItem & { apptId?: number | null };
+
+/* ---------- time & display helpers ---------- */
 const parseHHMM = (val?: string | null): { h: number; m: number } | null => {
   if (!val || typeof val !== "string") return null;
   const m = val.match(/^(\d{1,2}):(\d{2})$/);
@@ -79,16 +84,12 @@ const normalizeItem = (raw: any): ApiAppointment => {
 export default function ActiveAppointments(): JSX.Element {
   const navigate = useNavigate();
 
+  /* ---------- tabs, search, data ---------- */
   const [tab, setTab] = useState<TabKey>("all");
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [items, setItems] = useState<ApiAppointment[]>([]);
-
-  const [open, setOpen] = useState(false);
-  const [selected, setSelected] = useState<AppointmentDetail | null>(null);
-  const [actionLoading, setActionLoading] = useState(false);
-
   const [sortAsc, setSortAsc] = useState<boolean>(false);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -103,8 +104,8 @@ export default function ActiveAppointments(): JSX.Element {
       u.searchParams.set("page", "1");
       u.searchParams.set("pageSize", "500");
       const res = await fetch(u.toString(), { cache: "no-store", signal: ac.signal });
-      const json: ApiResponse = await res.json();
-      if (!res.ok || (json as any).error) throw new Error((json as any).error || "load failed");
+      const json: ApiResponse | any = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error || "load failed");
       setItems((json.items || []).map(normalizeItem));
     } catch (e: any) {
       if (e?.name !== "AbortError") {
@@ -152,6 +153,11 @@ export default function ActiveAppointments(): JSX.Element {
     });
     return copy;
   }, [filtered, sortAsc]);
+
+  /* ---------- appointment popup ---------- */
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<AppointmentDetail | null>(null);
+  const [actionLoading, setActionLoading] = useState(false);
 
   const fetchDetails = async (id: number): Promise<Partial<AppointmentDetail>> => {
     const res = await fetch(`http://localhost:4002/api/admin/appointments/${id}`, { cache: "no-store" });
@@ -228,6 +234,8 @@ export default function ActiveAppointments(): JSX.Element {
       window.dispatchEvent(new Event("patients-updated"));
       setOpen(false);
       setSelected(null);
+      // stay on page for approved
+      fetchNotifications(); // keep notif list in sync
     } catch (e) {
       alert((e as any).message || "Failed to approve");
     } finally {
@@ -243,6 +251,7 @@ export default function ActiveAppointments(): JSX.Element {
       updateStatusLocal(selected.id, "DECLINED");
       setOpen(false);
       setSelected(null);
+      fetchNotifications();
       bounceToHistory();
     } catch (e) {
       alert((e as any).message || "Failed to decline");
@@ -259,6 +268,7 @@ export default function ActiveAppointments(): JSX.Element {
       updateStatusLocal(selected.id, "COMPLETED");
       setOpen(false);
       setSelected(null);
+      fetchNotifications();
       bounceToHistory();
     } catch (e) {
       alert((e as any).message || "Failed to complete");
@@ -267,6 +277,89 @@ export default function ActiveAppointments(): JSX.Element {
     }
   };
 
+  /* ---------- notifications (copied logic) ---------- */
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotifWithApptId[]>([]);
+  const notifWrapRef = useRef<HTMLDivElement | null>(null);
+
+  const fetchNotifications = async () => {
+    try {
+      const r = await fetch("http://localhost:4002/api/notifications?limit=50", { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        setNotifications([]);
+        return;
+      }
+      setNotifications((j.items || []) as NotifWithApptId[]);
+    } catch {
+      setNotifications([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchNotifications();
+    const id = setInterval(fetchNotifications, 10000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const el = notifWrapRef.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) setNotifOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const removeNotifForAppt = (apptId: number) => {
+    setNotifications((prev) => prev.filter((n) => n.apptId !== apptId));
+  };
+
+  // From notifications: open AppointmentPopup for that appt and mark notif read
+  const handleViewFromNotif = async (notifId: number, apptId?: number | null) => {
+    if (!apptId) return;
+    setNotifOpen(false);
+
+    // try to find in current list; otherwise fetch a minimal detail then full detail
+    const found = items.find((x) => x.id === apptId);
+    if (found) {
+      await openPopup(found);
+    } else {
+      // minimal placeholder
+      setSelected({
+        id: apptId,
+        patientName: "",
+        email: null,
+        age: null,
+        gender: null,
+        phone: null,
+        address: null,
+        notes: null,
+        doctor: "",
+        date: "",
+        timeStart: "",
+        service: "",
+        status: "PENDING",
+      });
+      setOpen(true);
+      try {
+        const detail = await fetchDetails(apptId);
+        setSelected((prev) => (prev ? { ...prev, ...detail } as AppointmentDetail : prev));
+      } catch {}
+    }
+
+    // best-effort mark-as-read
+    try {
+      await fetch(`http://localhost:4002/api/notifications/${notifId}/read`, { method: "PATCH" });
+      // optimistically remove that notif (or keep and let polling refresh)
+      removeNotifForAppt(apptId);
+    } catch {}
+  };
+
+  /* ---------- UI ---------- */
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
@@ -284,7 +377,30 @@ export default function ActiveAppointments(): JSX.Element {
                 className="border-0 outline-none bg-transparent text-sm text-gray-700 placeholder:text-gray-400 h-auto p-0 w-full"
               />
             </div>
-            <BellIcon className="w-5 h-5 text-gray-600" />
+
+            {/* Notifications (same UX as Dashboard) */}
+            <div ref={notifWrapRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setNotifOpen((s) => !s)}
+                className="relative p-2 rounded hover:bg-gray-100"
+                aria-label="Open notifications"
+              >
+                <BellIcon className="w-5 h-5 text-gray-600" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-none">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              <NotificationPopup
+                open={notifOpen}
+                onClose={() => setNotifOpen(false)}
+                items={notifications}
+                onView={handleViewFromNotif} // (notifId, apptId)
+              />
+            </div>
           </div>
         </header>
 
@@ -293,7 +409,11 @@ export default function ActiveAppointments(): JSX.Element {
             <div>
               <h2 className="text-black text-xl font-semibold leading-tight">Active Appointments</h2>
               <p className="text-black/80 text-sm leading-tight">
-                {loading ? "Loading…" : error ? `Error: ${error}` : `You have ${items.filter(a => isActive(a.status)).length} total active appointments.`}
+                {loading
+                  ? "Loading…"
+                  : error
+                  ? `Error: ${error}`
+                  : `You have ${items.filter(a => isActive(a.status)).length} total active appointments.`}
               </p>
             </div>
 

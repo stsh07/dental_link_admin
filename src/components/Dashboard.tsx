@@ -1,4 +1,3 @@
-// src/components/Dashboard.tsx
 import React, { useEffect, useRef, useState } from "react";
 import { Bell } from "lucide-react";
 import Sidebar from "./Sidebar";
@@ -259,8 +258,6 @@ const Dashboard: React.FC = () => {
   const [notifications, setNotifications] = useState<NotifWithApptId[]>([]);
   const notifWrapRef = useRef<HTMLDivElement | null>(null);
 
-  const [openedNotifApptId, setOpenedNotifApptId] = useState<number | null>(null);
-
   const fetchNotifications = async () => {
     try {
       const r = await fetch("http://localhost:4002/api/notifications?limit=50", { cache: "no-store" });
@@ -320,11 +317,10 @@ const Dashboard: React.FC = () => {
     };
   };
 
-  // *** FIXED: accept (notifId, apptId) and use the real apptId ***
+  // Accept (notifId, apptId) and use the real apptId
   const handleViewFromNotif = async (notifId: number, apptId?: number | null) => {
     if (!apptId) return;
 
-    setOpenedNotifApptId(apptId);
     setNotifOpen(false);
 
     // show placeholder while loading details
@@ -348,7 +344,7 @@ const Dashboard: React.FC = () => {
     try {
       const detail = await fetchAppointmentDetail(apptId);
       setApptData((prev) => (prev ? ({ ...prev, ...detail } as AppointmentDetail) : prev));
-      // mark the notification as read (optional but nice)
+      // mark the notification as read (optional)
       try {
         await fetch(`http://localhost:4002/api/notifications/${notifId}/read`, { method: "PATCH" });
       } catch {}
@@ -379,7 +375,6 @@ const Dashboard: React.FC = () => {
     window.dispatchEvent(new Event("appointments-updated"));
     window.dispatchEvent(new Event("patients-updated"));
     fetchNotifications();
-    setOpenedNotifApptId(null);
   };
 
   const handleApprove = async () => {
@@ -448,7 +443,7 @@ const Dashboard: React.FC = () => {
               open={notifOpen}
               onClose={() => setNotifOpen(false)}
               items={notifications}
-              onView={handleViewFromNotif} // now matches (notifId, apptId)
+              onView={handleViewFromNotif} // (notifId, apptId)
             />
           </div>
         </div>

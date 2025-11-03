@@ -1,14 +1,20 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "./Sidebar";
 import { BellIcon, SearchIcon, Plus, Trash2, Calendar, Stethoscope } from "lucide-react";
+
+// Local assets
 import dentalBraces from "../assets/dentalBraces.svg";
 import cleaning from "../assets/cleaning.svg";
 import rootCCanal from "../assets/rootCCanal.svg";
 import toothExtraction from "../assets/toothExtraction.svg";
 import dentalConsultation from "../assets/dentalConsultation.svg";
 import toothFilling from "../assets/toothFilling.svg";
+
+// Popups
 import DeleteService from "../popups/deleteService";
 import AddService from "../popups/addService";
+import AppointmentPopup, { AppointmentDetail } from "../popups/AppointmentPopup";
+import NotificationPopup, { NotificationItem } from "../popups/notification";
 
 const API_BASE =
   (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/+$/, "") ||
@@ -21,6 +27,9 @@ type Service = {
   appointments: number;
   image: string;
 };
+
+/** Extend NotificationItem to carry the appointment id */
+type NotifWithApptId = NotificationItem & { apptId?: number | null };
 
 const IMAGE_MAP: Record<string, string> = {
   "dentalBraces.svg": dentalBraces,
@@ -38,6 +47,7 @@ const IMAGE_MAP: Record<string, string> = {
 };
 
 const Services: React.FC = () => {
+  /* ---------------- Services data ---------------- */
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -71,7 +81,7 @@ const Services: React.FC = () => {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/services`, { credentials: "include" });
+        const res = await fetch(`${API_BASE}/api/services`, { credentials: "include", cache: "no-store" });
         const json = await res.json();
         if (!json.ok) throw new Error(json.error || "Failed to fetch");
         const items: Service[] = (json.data || []).map(toService);
@@ -138,6 +148,166 @@ const Services: React.FC = () => {
     setServices((prev) => [...prev, newSvc]);
   };
 
+  /* ---------------- Notifications + Appointment-popup (same UX as Dashboard/Active/Patients) ---------------- */
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotifWithApptId[]>([]);
+  const notifWrapRef = useRef<HTMLDivElement | null>(null);
+
+  const fetchNotifications = async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/notifications?limit=50`, { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        setNotifications([]);
+        return;
+      }
+      setNotifications((j.items || []) as NotifWithApptId[]);
+    } catch {
+      setNotifications([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchNotifications();
+    const id = setInterval(fetchNotifications, 10000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const el = notifWrapRef.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) setNotifOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  const removeNotifForAppt = (apptId: number) => {
+    setNotifications((prev) => prev.filter((n) => n.apptId !== apptId));
+  };
+
+  /* Appointment popup */
+  const [apptOpen, setApptOpen] = useState(false);
+  const [apptData, setApptData] = useState<AppointmentDetail | null>(null);
+  const [apptActionLoading, setApptActionLoading] = useState(false);
+
+  const fetchAppointmentDetail = async (id: number): Promise<Partial<AppointmentDetail>> => {
+    const res = await fetch(`${API_BASE}/api/admin/appointments/${id}`, { cache: "no-store" });
+    if (!res.ok) return {};
+    const j = await res.json();
+    return {
+      patientName: j.patientName ?? j.full_name ?? "",
+      email: j.email ?? null,
+      age: j.age ?? null,
+      gender: j.gender ?? null,
+      phone: j.phone ?? null,
+      address: j.address ?? null,
+      notes: j.notes ?? null,
+      doctor: j.doctor ?? j.doctorName ?? "",
+      date: String(j.date ?? j.preferredDate ?? "").slice(0, 10),
+      timeStart: String(j.timeStart ?? j.preferredTime ?? "").slice(0, 5),
+      service: j.service ?? j.serviceName ?? j.procedureName ?? "",
+      status: String(j.status ?? "PENDING").toUpperCase() as AppointmentDetail["status"],
+    };
+  };
+
+  const patchStatus = async (id: number, status: AppointmentDetail["status"]) => {
+    const res = await fetch(`${API_BASE}/api/appointments/${id}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.error || "update failed");
+    }
+  };
+
+  const afterSuccessfulAction = (apptId: number) => {
+    setApptOpen(false);
+    removeNotifForAppt(apptId);
+    window.dispatchEvent(new Event("appointments-updated"));
+    window.dispatchEvent(new Event("patients-updated"));
+    fetchNotifications();
+  };
+
+  const handleApprove = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "CONFIRMED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to approve");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "DECLINED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to decline");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleComplete = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "COMPLETED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to complete");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  // From notifications: open AppointmentPopup & mark-as-read
+  const handleViewFromNotif = async (notifId: number, apptId?: number | null) => {
+    if (!apptId) return;
+
+    setNotifOpen(false);
+
+    // show placeholder while loading details
+    setApptData({
+      id: apptId,
+      patientName: "",
+      email: null,
+      age: null,
+      gender: null,
+      phone: null,
+      address: null,
+      notes: null,
+      doctor: "",
+      date: "",
+      timeStart: "",
+      service: "",
+      status: "PENDING",
+    });
+    setApptOpen(true);
+
+    try {
+      const detail = await fetchAppointmentDetail(apptId);
+      setApptData((prev) => (prev ? ({ ...prev, ...detail } as AppointmentDetail) : prev));
+      try {
+        await fetch(`${API_BASE}/api/notifications/${notifId}/read`, { method: "PATCH" });
+        removeNotifForAppt(apptId);
+      } catch {}
+    } catch {}
+  };
+
+  /* ---------------- UI ---------------- */
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
@@ -154,7 +324,30 @@ const Services: React.FC = () => {
                 className="border-0 outline-none bg-transparent text-sm text-gray-700 placeholder:text-gray-400 h-auto p-0 w-full"
               />
             </div>
-            <BellIcon className="w-5 h-5 text-gray-600" />
+
+            {/* Notifications dropdown (same behavior as Dashboard/Active/Patients) */}
+            <div ref={notifWrapRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setNotifOpen((s) => !s)}
+                className="relative p-2 rounded hover:bg-gray-100"
+                aria-label="Open notifications"
+              >
+                <BellIcon className="w-5 h-5 text-gray-600" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-none">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              <NotificationPopup
+                open={notifOpen}
+                onClose={() => setNotifOpen(false)}
+                items={notifications}
+                onView={handleViewFromNotif} // (notifId, apptId)
+              />
+            </div>
           </div>
         </header>
 
@@ -227,6 +420,7 @@ const Services: React.FC = () => {
         </div>
       </main>
 
+      {/* Modals */}
       <DeleteService
         open={deleteOpen}
         serviceName={deleteTargetName}
@@ -236,6 +430,17 @@ const Services: React.FC = () => {
       />
 
       <AddService open={addOpen} onClose={() => setAddOpen(false)} onCreated={handleAddCreated} />
+
+      {/* Appointment popup (opened from notifications) */}
+      <AppointmentPopup
+        open={apptOpen}
+        data={apptData}
+        onClose={() => setApptOpen(false)}
+        onApprove={handleApprove}
+        onDecline={handleDecline}
+        onComplete={handleComplete}
+        actionLoading={apptActionLoading}
+      />
     </div>
   );
 };
