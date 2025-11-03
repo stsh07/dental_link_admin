@@ -50,6 +50,7 @@ const adminPatientsRouter = require("./routes/adminPatients");
 const changePasswordRouter = require("./routes/change-password");
 const servicesRouter = require("./routes/services");
 const adminRouter = require("./routes/admin");
+const notificationsRouter = require("./routes/notifications"); // << add
 
 app.use("/api/auth", authRouter);
 app.use("/api/reset-admin", resetAdminRouter);
@@ -59,10 +60,9 @@ app.use("/api", reviewsRouter);
 app.use("/api/change-password", changePasswordRouter);
 app.use("/api/services", servicesRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/notifications", notificationsRouter); // << add
 
-/* main appointments routes under /api */
 app.use("/api", appointmentsRouter);
-/* legacy paths without /api (for doctor profile calling /doctors/:id/appointments and for /appointments/:id/status) */
 app.use("/", appointmentsRouter);
 
 app.use((req, res) => res.status(404).json({ ok: false, error: "NOT_FOUND" }));

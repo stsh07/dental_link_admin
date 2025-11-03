@@ -1,13 +1,16 @@
 // src/components/Dashboard.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Bell } from "lucide-react";
 import Sidebar from "./Sidebar";
+import NotificationPopup, { NotificationItem } from "../popups/notification";
+import AppointmentPopup, { AppointmentDetail } from "../popups/AppointmentPopup";
 
 import totalPatientIcon from "../assets/total_patient.svg";
 import completedIcon from "../assets/completed.svg";
 import pendingIcon from "../assets/pending.svg";
 import declinedIcon from "../assets/declined.svg";
 
+/* ---------- types ---------- */
 type Stats = {
   total: number;
   pending: number;
@@ -36,6 +39,9 @@ type ApiAppointment = {
 };
 
 type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
+
+/** Extend NotificationItem to carry the appointment id */
+type NotifWithApptId = NotificationItem & { apptId?: number | null };
 
 const normalize = (s: string) => (s || "").trim().toLowerCase();
 
@@ -91,6 +97,7 @@ const normalizeItem = (raw: any): ApiAppointment => {
 };
 
 const Dashboard: React.FC = () => {
+  /* ---------- STATS ---------- */
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsLoading, setStatsLoading] = useState(false);
   const [statsErr, setStatsErr] = useState("");
@@ -102,10 +109,7 @@ const Dashboard: React.FC = () => {
       const res = await fetch("http://localhost:4002/api/admin/stats", { cache: "no-store" });
       const json: any = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to load stats");
-
-      const data =
-        json && typeof json === "object" && "stats" in json ? json.stats : json;
-
+      const data = json && typeof json === "object" && "stats" in json ? json.stats : json;
       setStats({
         total: Number(data.total || 0),
         pending: Number(data.pending || 0),
@@ -135,6 +139,7 @@ const Dashboard: React.FC = () => {
   const pending = stats?.pending || 0;
   const declined = stats?.declined || 0;
 
+  /* ---------- DOCTORS + TODAY ---------- */
   const [doctors, setDoctors] = useState<DoctorRow[]>([]);
   const [doctorsLoading, setDoctorsLoading] = useState(true);
   const [doctorsErr, setDoctorsErr] = useState("");
@@ -189,9 +194,7 @@ const Dashboard: React.FC = () => {
       const todayYMD = todayYMDManila();
       const todays = items
         .filter((a) => (a.status === "CONFIRMED" || a.status === "APPROVED") && a.date === todayYMD)
-        .sort((a, b) =>
-          a.timeStart < b.timeStart ? -1 : a.timeStart > b.timeStart ? 1 : 0
-        );
+        .sort((a, b) => (a.timeStart < b.timeStart ? -1 : a.timeStart > b.timeStart ? 1 : 0));
 
       setTodaysApproved(todays);
     } catch {
@@ -233,46 +236,225 @@ const Dashboard: React.FC = () => {
 
   const doctorsAtWork = doctors.filter((d) => (d.status || "") === "At Work");
 
-  const [topServices, setTopServices] = useState<
-    { name: string; percentage: number }[]
-  >([]);
-
+  /* ---------- Top services ---------- */
+  const [topServices, setTopServices] = useState<{ name: string; percentage: number }[]>([]);
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch("http://localhost:4002/api/admin/top-services", {
-          cache: "no-store",
-        });
+        const r = await fetch("http://localhost:4002/api/admin/top-services", { cache: "no-store" });
         const j = await r.json();
         if (!r.ok || !j.ok) {
           setTopServices([]);
           return;
         }
-        setTopServices(
-          (j.items || []).map((x: any) => ({
-            name: x.name,
-            percentage: x.percentage,
-          }))
-        );
+        setTopServices((j.items || []).map((x: any) => ({ name: x.name, percentage: x.percentage })));
       } catch {
         setTopServices([]);
       }
     })();
   }, []);
 
+  /* ---------- Notifications ---------- */
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<NotifWithApptId[]>([]);
+  const notifWrapRef = useRef<HTMLDivElement | null>(null);
+
+  const [openedNotifApptId, setOpenedNotifApptId] = useState<number | null>(null);
+
+  const fetchNotifications = async () => {
+    try {
+      const r = await fetch("http://localhost:4002/api/notifications?limit=50", { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        setNotifications([]);
+        return;
+      }
+      setNotifications((j.items || []) as NotifWithApptId[]);
+    } catch {
+      setNotifications([]);
+    }
+  };
+
+  useEffect(() => {
+    fetchNotifications();
+    const id = setInterval(fetchNotifications, 10000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      const el = notifWrapRef.current;
+      if (!el) return;
+      if (!el.contains(e.target as Node)) setNotifOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, []);
+
+  const unreadCount = notifications.filter((n) => !n.read).length;
+
+  /* ---------- Appointment popup ---------- */
+  const [apptOpen, setApptOpen] = useState(false);
+  const [apptData, setApptData] = useState<AppointmentDetail | null>(null);
+  const [apptActionLoading, setApptActionLoading] = useState(false);
+
+  const fetchAppointmentDetail = async (id: number): Promise<Partial<AppointmentDetail>> => {
+    const res = await fetch(`http://localhost:4002/api/admin/appointments/${id}`, {
+      cache: "no-store",
+    });
+    if (!res.ok) return {};
+    const j = await res.json();
+    return {
+      patientName: j.patientName ?? j.full_name ?? "",
+      email: j.email ?? null,
+      age: j.age ?? null,
+      gender: j.gender ?? null,
+      phone: j.phone ?? null,
+      address: j.address ?? null,
+      notes: j.notes ?? null,
+      doctor: j.doctor ?? j.doctorName ?? "",
+      date: String(j.date ?? j.preferredDate ?? "").slice(0, 10),
+      timeStart: String(j.timeStart ?? j.preferredTime ?? "").slice(0, 5),
+      service: j.service ?? j.serviceName ?? j.procedureName ?? "",
+      status: String(j.status ?? "PENDING").toUpperCase() as AppointmentDetail["status"],
+    };
+  };
+
+  // *** FIXED: accept (notifId, apptId) and use the real apptId ***
+  const handleViewFromNotif = async (notifId: number, apptId?: number | null) => {
+    if (!apptId) return;
+
+    setOpenedNotifApptId(apptId);
+    setNotifOpen(false);
+
+    // show placeholder while loading details
+    setApptData({
+      id: apptId,
+      patientName: "",
+      email: null,
+      age: null,
+      gender: null,
+      phone: null,
+      address: null,
+      notes: null,
+      doctor: "",
+      date: "",
+      timeStart: "",
+      service: "",
+      status: "PENDING",
+    });
+    setApptOpen(true);
+
+    try {
+      const detail = await fetchAppointmentDetail(apptId);
+      setApptData((prev) => (prev ? ({ ...prev, ...detail } as AppointmentDetail) : prev));
+      // mark the notification as read (optional but nice)
+      try {
+        await fetch(`http://localhost:4002/api/notifications/${notifId}/read`, { method: "PATCH" });
+      } catch {}
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const patchStatus = async (id: number, status: AppointmentDetail["status"]) => {
+    const res = await fetch(`http://localhost:4002/api/appointments/${id}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j.error || "update failed");
+    }
+  };
+
+  const removeNotifForAppt = (apptId: number) => {
+    setNotifications((prev) => prev.filter((n) => n.apptId !== apptId));
+  };
+
+  const afterSuccessfulAction = (apptId: number) => {
+    setApptOpen(false);
+    removeNotifForAppt(apptId);
+    window.dispatchEvent(new Event("appointments-updated"));
+    window.dispatchEvent(new Event("patients-updated"));
+    fetchNotifications();
+    setOpenedNotifApptId(null);
+  };
+
+  const handleApprove = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "CONFIRMED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to approve");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleDecline = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "DECLINED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to decline");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  const handleComplete = async () => {
+    if (!apptData) return;
+    try {
+      setApptActionLoading(true);
+      await patchStatus(apptData.id, "COMPLETED");
+      afterSuccessfulAction(apptData.id);
+    } catch (e: any) {
+      alert(e?.message || "Failed to complete");
+    } finally {
+      setApptActionLoading(false);
+    }
+  };
+
+  /* ---------- UI ---------- */
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
       <div className="flex-1 min-w-0 flex flex-col">
         <div className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
           <h1 className="text-black text-[28px] font-semibold">Dashboard Overview</h1>
-          <Bell className="w-6 h-6 text-gray-600" />
+
+          <div ref={notifWrapRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setNotifOpen((s) => !s)}
+              className="relative p-2 rounded hover:bg-gray-100"
+              aria-label="Open notifications"
+            >
+              <Bell className="w-6 h-6 text-gray-600" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] leading-none">
+                  {unreadCount > 9 ? "9+" : unreadCount}
+                </span>
+              )}
+            </button>
+
+            <NotificationPopup
+              open={notifOpen}
+              onClose={() => setNotifOpen(false)}
+              items={notifications}
+              onView={handleViewFromNotif} // now matches (notifId, apptId)
+            />
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-6">
-          {!!statsErr && (
-            <p className="text-sm text-red-600 mb-3">Error: {statsErr}</p>
-          )}
+          {!!statsErr && <p className="text-sm text-red-600 mb-3">Error: {statsErr}</p>}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
             {[
@@ -281,21 +463,12 @@ const Dashboard: React.FC = () => {
               { label: "Pending", value: pending, iconSrc: pendingIcon },
               { label: "Declined", value: declined, iconSrc: declinedIcon },
             ].map((c) => (
-              <div
-                key={c.label}
-                className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm"
-              >
+              <div key={c.label} className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
                 <div className="flex items-center">
-                  <img
-                    src={c.iconSrc}
-                    alt={c.label}
-                    className="w-12 h-12 mr-4 object-contain"
-                  />
+                  <img src={c.iconSrc} alt={c.label} className="w-12 h-12 mr-4 object-contain" />
                   <div>
                     <p className="text-sm text-gray-600">{c.label}</p>
-                    <p className="text-2xl font-bold text-gray-900">
-                      {statsLoading ? "…" : c.value}
-                    </p>
+                    <p className="text-2xl font-bold text-gray-900">{statsLoading ? "…" : c.value}</p>
                   </div>
                 </div>
               </div>
@@ -305,26 +478,21 @@ const Dashboard: React.FC = () => {
           <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm mb-4">
             <h3 className="text-lg font-semibold text-gray-800 mb-4">Top Services</h3>
             <div className="space-y-4">
-              {topServices.length === 0
-                ? (
-                  <p className="text-sm text-gray-500">No data.</p>
-                )
-                : topServices.map((service, index) => (
-                    <div key={index}>
-                      <div className="flex justify-between items-center mb-2">
-                        <span className="text-sm text-gray-600">{service.name}</span>
-                        <span className="text-sm text-gray-600">
-                          {service.percentage}%
-                        </span>
-                      </div>
-                      <div className="w-full bg-gray-200 h-2 rounded">
-                        <div
-                          className={`h-2 rounded bg-blue-500`}
-                          style={{ width: `${service.percentage}%` }}
-                        />
-                      </div>
+              {topServices.length === 0 ? (
+                <p className="text-sm text-gray-500">No data.</p>
+              ) : (
+                topServices.map((service, index) => (
+                  <div key={index}>
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm text-gray-600">{service.name}</span>
+                      <span className="text-sm text-gray-600">{service.percentage}%</span>
                     </div>
-                  ))}
+                    <div className="w-full bg-gray-200 h-2 rounded">
+                      <div className="h-2 rounded bg-blue-500" style={{ width: `${service.percentage}%` }} />
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
@@ -337,14 +505,10 @@ const Dashboard: React.FC = () => {
                 )}
               </div>
 
-              {!!doctorsErr && (
-                <p className="text-sm text-red-600 mb-3">Error: {doctorsErr}</p>
-              )}
+              {!!doctorsErr && <p className="text-sm text-red-600 mb-3">Error: {doctorsErr}</p>}
 
               {!doctorsLoading && !countsLoading && doctorsAtWork.length === 0 ? (
-                <p className="text-sm text-gray-500 mb-3">
-                  No doctors are currently at work.
-                </p>
+                <p className="text-sm text-gray-500 mb-3">No doctors are currently at work.</p>
               ) : (
                 <div className="divide-y divide-gray-200">
                   {doctorsAtWork.map((d) => {
@@ -352,22 +516,14 @@ const Dashboard: React.FC = () => {
                     return (
                       <div key={d.id} className="grid grid-cols-3 items-center py-3">
                         <div>
-                          <p className="font-medium text-gray-900 leading-6">
-                            {d.full_name}
-                          </p>
-                          <p className="text-xs text-gray-400 mt-0.5">
-                            {d.work_time || "08:00 – 17:00"}
-                          </p>
+                          <p className="font-medium text-gray-900 leading-6">{d.full_name}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">{d.work_time || "08:00 – 17:00"}</p>
                         </div>
                         <div className="text-center">
-                          <p className="text-sm font-medium text-gray-900">
-                            {count} patients
-                          </p>
+                          <p className="text-sm font-medium text-gray-900">{count} patients</p>
                         </div>
                         <div className="text-left">
-                          <p className={`text-sm font-medium ${statusClass(d.status)}`}>
-                            {d.status || "At Work"}
-                          </p>
+                          <p className={`text-sm font-medium ${statusClass(d.status)}`}>{d.status || "At Work"}</p>
                         </div>
                       </div>
                     );
@@ -377,9 +533,7 @@ const Dashboard: React.FC = () => {
             </div>
 
             <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm">
-              <h3 className="text-lg font-semibold text-gray-800 mb-10">
-                Todays Appointments
-              </h3>
+              <h3 className="text-lg font-semibold text-gray-800 mb-10">Todays Appointments</h3>
 
               <div className="grid grid-cols-3 text-sm font-medium text-gray-600 mb-3 px-1">
                 <span>Patient</span>
@@ -388,17 +542,14 @@ const Dashboard: React.FC = () => {
               </div>
 
               {todayLoading ? (
-                <p className="text-sm text-gray-500 px-1">
-                  Loading today’s appointments…
-                </p>
+                <p className="text-sm text-gray-500 px-1">Loading today’s appointments…</p>
               ) : todaysApproved.length > 0 ? (
                 <div className="space-y-3">
                   {todaysApproved.map((a) => {
                     const start12 = to12hSafe(a.timeStart);
                     const endHM = addMinutesSafe(a.timeStart, 120);
                     const end12 = endHM ? to12hSafe(endHM) : "—";
-                    const timeRange =
-                      start12 !== "—" && end12 !== "—" ? `${start12}` : start12;
+                    const timeRange = start12 !== "—" && end12 !== "—" ? `${start12}` : start12;
                     const dateDisp = fmtDateCompact(a.date);
                     return (
                       <div
@@ -406,20 +557,14 @@ const Dashboard: React.FC = () => {
                         className="grid grid-cols-3 items-center gap-4 rounded-xl border border-gray-200 bg-white shadow-sm px-4 py-3"
                       >
                         <div className="truncate">
-                          <p className="text-sm font-medium text-gray-900">
-                            {a.patientName || "—"}
-                          </p>
+                          <p className="text-sm font-medium text-gray-900">{a.patientName || "—"}</p>
                         </div>
                         <div>
-                          <p className="text-sm font-semibold text-gray-900">
-                            {timeRange}
-                          </p>
+                          <p className="text-sm font-semibold text-gray-900">{timeRange}</p>
                           <p className="text-xs text-gray-400">{dateDisp}</p>
                         </div>
                         <div className="text-left">
-                          <p className="text-sm font-semibold text-gray-900">
-                            {a.service || "—"}
-                          </p>
+                          <p className="text-sm font-semibold text-gray-900">{a.service || "—"}</p>
                         </div>
                       </div>
                     );
@@ -432,6 +577,17 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Appointment popup */}
+      <AppointmentPopup
+        open={apptOpen}
+        data={apptData}
+        onClose={() => setApptOpen(false)}
+        onApprove={handleApprove}
+        onDecline={handleDecline}
+        onComplete={handleComplete}
+        actionLoading={apptActionLoading}
+      />
     </div>
   );
 };

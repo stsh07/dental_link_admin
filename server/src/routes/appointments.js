@@ -115,8 +115,7 @@ router.post("/appointments", async (req, res) => {
 });
 
 /* =========================
-   ADMIN LIST (for React pages)
-   GET /api/admin/appointments?page=1&pageSize=500&search=...
+   ADMIN LIST
    ========================= */
 router.get("/admin/appointments", async (req, res) => {
   try {
@@ -247,6 +246,14 @@ router.post("/admin/appointments/:id/approve", async (req, res) => {
     const [r] = await pool.query("UPDATE appointments SET status='CONFIRMED' WHERE id = ?", [id]);
     if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
 
+    // Also mark its notification as read (ignore if table missing)
+    try {
+      await pool.query(
+        "UPDATE notifications SET is_read = 1 WHERE type='APPOINTMENT_SUBMITTED' AND ref_id = ?",
+        [id]
+      );
+    } catch (_) {}
+
     res.json({ ok: true, id, status: "CONFIRMED" });
   } catch (err) {
     console.error("approve err:", err);
@@ -261,6 +268,13 @@ router.post("/admin/appointments/:id/decline", async (req, res) => {
 
     const [r] = await pool.query("UPDATE appointments SET status='DECLINED' WHERE id = ?", [id]);
     if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+
+    try {
+      await pool.query(
+        "UPDATE notifications SET is_read = 1 WHERE type='APPOINTMENT_SUBMITTED' AND ref_id = ?",
+        [id]
+      );
+    } catch (_) {}
 
     res.json({ ok: true, id, status: "DECLINED" });
   } catch (err) {
@@ -277,6 +291,13 @@ router.post("/admin/appointments/:id/complete", async (req, res) => {
     const [r] = await pool.query("UPDATE appointments SET status='COMPLETED' WHERE id = ?", [id]);
     if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
 
+    try {
+      await pool.query(
+        "UPDATE notifications SET is_read = 1 WHERE type='APPOINTMENT_SUBMITTED' AND ref_id = ?",
+        [id]
+      );
+    } catch (_) {}
+
     res.json({ ok: true, id, status: "COMPLETED" });
   } catch (err) {
     console.error("complete err:", err);
@@ -285,7 +306,7 @@ router.post("/admin/appointments/:id/complete", async (req, res) => {
 });
 
 /* =========================
-   GENERIC STATUS (your React uses PATCH /api/appointments/:id/status)
+   GENERIC STATUS (PATCH/POST/PUT)
    ========================= */
 async function updateStatusHandler(req, res) {
   try {
@@ -308,6 +329,16 @@ async function updateStatusHandler(req, res) {
     ]);
     if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
 
+    // Mark notification read when the appointment leaves PENDING
+    if (newStatus !== "PENDING") {
+      try {
+        await pool.query(
+          "UPDATE notifications SET is_read = 1 WHERE type='APPOINTMENT_SUBMITTED' AND ref_id = ?",
+          [id]
+        );
+      } catch (_) {}
+    }
+
     res.json({ ok: true, id, status: newStatus });
   } catch (err) {
     console.error("status err:", err);
@@ -319,7 +350,8 @@ router.patch("/appointments/:id/status", updateStatusHandler);
 router.put("/appointments/:id/status", updateStatusHandler);
 
 /* =========================
-   USER HISTORY (for client site)
+   USER HISTORY / SINGLE / DOCTOR HISTORY / TOP SERVICES
+   (unchanged below)
    ========================= */
 router.get("/appointments/user/history", async (req, res) => {
   try {
@@ -352,9 +384,6 @@ router.get("/appointments/user/history", async (req, res) => {
   }
 });
 
-/* =========================
-   USER SINGLE APPT
-   ========================= */
 router.get("/appointments/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -385,9 +414,6 @@ router.get("/appointments/:id", async (req, res) => {
   }
 });
 
-/* =========================
-   DOCTOR HISTORY
-   ========================= */
 router.get("/doctors/:id/appointments", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -419,9 +445,6 @@ router.get("/doctors/:id/appointments", async (req, res) => {
   }
 });
 
-/* =========================
-   TOP SERVICES
-   ========================= */
 router.get("/admin/appointments/top-services", async (_req, res) => {
   try {
     const [rows] = await pool.query(
