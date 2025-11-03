@@ -1,16 +1,15 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Sidebar from "./Sidebar";
 import { Plus, Bell as BellIcon, Search as SearchIcon, Calendar, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import Modal from "./modal";
 import AddDoctorPopup from "../popups/addDoctor";
 
-/** === API base helper (no separate api.ts needed) === */
+/* helpers */
 function joinUrl(base: string, path: string) {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
-const API_BASE =
-  (import.meta as any).env?.VITE_API_URL?.toString() || "http://localhost:4002";
+const API_BASE = (import.meta as any).env?.VITE_API_URL?.toString() || "http://localhost:4002";
 
 type DoctorRow = {
   id: number;
@@ -19,7 +18,7 @@ type DoctorRow = {
   work_time?: string | null;
   status?: "At Work" | "Lunch" | "Absent" | "Leave" | "At Leave" | string | null;
   created_at?: string;
-  profile_url?: string | null; // for avatar
+  profile_url?: string | null;
 };
 
 function statusClass(status?: string | null) {
@@ -71,7 +70,6 @@ const Doctors: React.FC = () => {
   const [err, setErr] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
 
-  // doctorName -> active appt count (CONFIRMED only)
   const [counts, setCounts] = useState<Record<string, number>>({});
   const navigate = useNavigate();
 
@@ -83,15 +81,10 @@ const Doctors: React.FC = () => {
   }
 
   async function loadActiveCounts(signal?: AbortSignal) {
-    // If your backend has /api/doctors/counts/active keep this,
-    // otherwise we’ll fallback to zero counts on failure.
     const url = joinUrl(API_BASE, "/api/doctors/counts/active");
     const res = await fetch(url, { signal, cache: "no-store" });
-    if (!res.ok) {
-      return {}; // graceful fallback if route not present
-    }
+    if (!res.ok) return {};
     const json = await res.json();
-    // Expecting: { ok: true, counts: { "Krystal Cruz": 2, ... } }
     return (json.counts || {}) as Record<string, number>;
   }
 
@@ -100,10 +93,7 @@ const Doctors: React.FC = () => {
       setLoading(true);
       setErr(null);
       const ctrl = new AbortController();
-      const [d, c] = await Promise.all([
-        loadDoctors(ctrl.signal),
-        loadActiveCounts(ctrl.signal).catch(() => ({})),
-      ]);
+      const [d, c] = await Promise.all([loadDoctors(ctrl.signal), loadActiveCounts(ctrl.signal).catch(() => ({}))]);
       setRows(d);
       setCounts(c);
     } catch (e: any) {
@@ -115,11 +105,7 @@ const Doctors: React.FC = () => {
     }
   }
 
-  useEffect(() => {
-    loadAll();
-  }, []);
-
-  // Refresh when appointments or doctors change elsewhere
+  useEffect(() => { loadAll(); }, []);
   useEffect(() => {
     const onAppt = () => loadAll();
     const onDocs = () => loadAll();
@@ -131,19 +117,18 @@ const Doctors: React.FC = () => {
     };
   }, []);
 
-  const filtered = rows.filter((d) => {
-    const n = (d.full_name || "").toLowerCase();
-    const p = (d.position || "").toLowerCase();
+  // Search by doctor name only (per request)
+  const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return !q || n.includes(q) || p.includes(q);
-  });
+    if (!q) return rows;
+    return rows.filter((d) => (d.full_name || "").toLowerCase().includes(q));
+  }, [rows, query]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
 
       <div className="flex-1 min-w-0 flex flex-col">
-        {/* Header */}
         <header className="h-[72px] bg-white shadow-sm px-8 flex items-center justify-between sticky top-0 z-10">
           <h1 className="text-black text-[28px] font-semibold">Doctors</h1>
 
@@ -161,13 +146,12 @@ const Doctors: React.FC = () => {
           </div>
         </header>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto px-8 pt-4 pb-8">
           <div className="flex items-end justify-between mb-4">
             <div>
               <h2 className="text-black text-xl font-semibold leading-tight">Doctors List</h2>
               <p className="text-black/80 text-sm leading-tight">
-                {loading ? "Loading…" : `You have ${rows.length} doctors.`}
+                {loading ? "Loading…" : `You have ${filtered.length} doctors.`}
               </p>
               {err && <p className="text-red-600 text-sm mt-1">{err}</p>}
             </div>
@@ -182,7 +166,6 @@ const Doctors: React.FC = () => {
             </button>
           </div>
 
-          {/* Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {filtered.map((doc) => {
               const count = counts[(doc.full_name || "").trim()] ?? 0;
@@ -227,13 +210,12 @@ const Doctors: React.FC = () => {
         </div>
       </div>
 
-      {/* Add Doctor POPUP */}
       <Modal
         isOpen={showModal}
         onClose={() => setShowModal(false)}
         showDivider={false}
         headerSlot={
-          <h1 className="text-[28px] sm:text-[32px] font-semibold text-black leading-tight truncate">
+          <h1 className="text-[28px] sm:text[32px] font-semibold text-black leading-tight truncate">
             New Doctor
           </h1>
         }

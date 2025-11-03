@@ -41,7 +41,9 @@ function buildSlots(date, existingTimes) {
   });
 }
 
-/* -------- slots for user form -------- */
+/* =========================
+   SLOTS (user form)
+   ========================= */
 router.get("/appointments/slots", async (req, res) => {
   try {
     const date = req.query.date;
@@ -65,7 +67,9 @@ router.get("/appointments/slots", async (req, res) => {
   }
 });
 
-/* -------- create from user site -------- */
+/* =========================
+   CREATE (user site)
+   ========================= */
 router.post("/appointments", async (req, res) => {
   try {
     const b = req.body || {};
@@ -110,7 +114,10 @@ router.post("/appointments", async (req, res) => {
   }
 });
 
-/* -------- admin list -------- */
+/* =========================
+   ADMIN LIST (for React pages)
+   GET /api/admin/appointments?page=1&pageSize=500&search=...
+   ========================= */
 router.get("/admin/appointments", async (req, res) => {
   try {
     const page = Number(req.query.page || 1);
@@ -119,10 +126,24 @@ router.get("/admin/appointments", async (req, res) => {
     const offset = (page - 1) * pageSize;
 
     const params = [];
+    const countParams = [];
     let where = "1=1";
+
     if (search) {
-      where += " AND (a.full_name LIKE ? OR a.email LIKE ?)";
-      params.push(`%${search}%`, `%${search}%`);
+      where += `
+        AND (
+          a.full_name LIKE ?
+          OR a.email LIKE ?
+          OR a.phone LIKE ?
+          OR d.full_name LIKE ?
+          OR s.name LIKE ?
+          OR a.status LIKE ?
+          OR DATE_FORMAT(a.preferred_date,'%Y-%m-%d') LIKE ?
+        )
+      `;
+      const like = `%${search}%`;
+      params.push(like, like, like, like, like, like, like);
+      countParams.push(like, like, like, like, like, like, like);
     }
 
     const [rows] = await pool.query(
@@ -152,8 +173,14 @@ router.get("/admin/appointments", async (req, res) => {
     );
 
     const [cnt] = await pool.query(
-      `SELECT COUNT(*) AS c FROM appointments a WHERE ${where}`,
-      params
+      `
+      SELECT COUNT(*) AS c
+      FROM appointments a
+      LEFT JOIN dentists d ON d.id = a.dentist_id
+      LEFT JOIN services s ON s.id = a.procedure_id
+      WHERE ${where}
+      `,
+      countParams
     );
 
     res.json({
@@ -168,7 +195,9 @@ router.get("/admin/appointments", async (req, res) => {
   }
 });
 
-/* -------- admin detail (popup) -------- */
+/* =========================
+   ADMIN DETAIL (popup)
+   ========================= */
 router.get("/admin/appointments/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -207,7 +236,9 @@ router.get("/admin/appointments/:id", async (req, res) => {
   }
 });
 
-/* -------- admin approve -------- */
+/* =========================
+   ADMIN APPROVE / DECLINE / COMPLETE
+   ========================= */
 router.post("/admin/appointments/:id/approve", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -223,7 +254,6 @@ router.post("/admin/appointments/:id/approve", async (req, res) => {
   }
 });
 
-/* -------- admin decline -------- */
 router.post("/admin/appointments/:id/decline", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -239,7 +269,6 @@ router.post("/admin/appointments/:id/decline", async (req, res) => {
   }
 });
 
-/* -------- admin complete -------- */
 router.post("/admin/appointments/:id/complete", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -255,7 +284,9 @@ router.post("/admin/appointments/:id/complete", async (req, res) => {
   }
 });
 
-/* -------- generic status (POST|PATCH|PUT) -------- */
+/* =========================
+   GENERIC STATUS (your React uses PATCH /api/appointments/:id/status)
+   ========================= */
 async function updateStatusHandler(req, res) {
   try {
     const id = Number(req.params.id);
@@ -287,7 +318,9 @@ router.post("/appointments/:id/status", updateStatusHandler);
 router.patch("/appointments/:id/status", updateStatusHandler);
 router.put("/appointments/:id/status", updateStatusHandler);
 
-/* -------- user history -------- */
+/* =========================
+   USER HISTORY (for client site)
+   ========================= */
 router.get("/appointments/user/history", async (req, res) => {
   try {
     const email = (req.query.email || "").trim().toLowerCase();
@@ -319,7 +352,9 @@ router.get("/appointments/user/history", async (req, res) => {
   }
 });
 
-/* -------- user single appt (review page) -------- */
+/* =========================
+   USER SINGLE APPT
+   ========================= */
 router.get("/appointments/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -350,7 +385,9 @@ router.get("/appointments/:id", async (req, res) => {
   }
 });
 
-/* -------- doctor history (for doctor profile) -------- */
+/* =========================
+   DOCTOR HISTORY
+   ========================= */
 router.get("/doctors/:id/appointments", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -382,7 +419,9 @@ router.get("/doctors/:id/appointments", async (req, res) => {
   }
 });
 
-/* -------- top services -------- */
+/* =========================
+   TOP SERVICES
+   ========================= */
 router.get("/admin/appointments/top-services", async (_req, res) => {
   try {
     const [rows] = await pool.query(

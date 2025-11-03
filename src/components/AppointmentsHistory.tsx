@@ -15,7 +15,7 @@ type Row = {
 type TabKey = "all" | "completed" | "declined";
 type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
 
-/* time helpers */
+/* time */
 const parseHHMM = (val?: string | null): { h: number; m: number } | null => {
   if (!val || typeof val !== "string") return null;
   const m = val.match(/^(\d{1,2}):(\d{2})$/);
@@ -50,20 +50,14 @@ const prettyDate = (ymd?: string | null) => {
 const badgeClass = (s: Row["status"]) =>
   s === "DECLINED" ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-600";
 
-/* robust normalizer */
+/* normalizer */
 const normalizeItem = (raw: any): Row => {
   const id = Number(raw.id ?? 0);
-  const patientName = String(
-    raw.patientName ?? raw.full_name ?? raw.name ?? ""
-  ).trim();
-  const doctor = String(
-    raw.doctor ?? raw.doctorName ?? raw.dentist ?? ""
-  ).trim();
+  const patientName = String(raw.patientName ?? raw.full_name ?? raw.name ?? "").trim();
+  const doctor = String(raw.doctor ?? raw.doctorName ?? raw.dentist ?? "").trim();
   const date = String(raw.date ?? raw.preferredDate ?? "").slice(0, 10);
   const timeStart = String(raw.timeStart ?? raw.preferredTime ?? "").slice(0, 5);
-  const service = String(
-    raw.service ?? raw.serviceName ?? raw.procedureName ?? raw.procedure ?? ""
-  ).trim();
+  const service = String(raw.service ?? raw.serviceName ?? raw.procedureName ?? raw.procedure ?? "").trim();
   const s = String(raw.status ?? "").toUpperCase();
   const status: Row["status"] = s === "DECLINED" ? "DECLINED" : "COMPLETED";
   return { id, patientName, doctor, date, timeStart, service, status };
@@ -87,23 +81,14 @@ export default function AppointmentsHistory(): JSX.Element {
     try {
       const u = new URL("http://localhost:4002/api/admin/appointments");
       u.searchParams.set("page","1");
-      u.searchParams.set("pageSize","500");
-      if (query.trim()) u.searchParams.set("search", query.trim());
-
+      u.searchParams.set("pageSize","500"); // no backend search; client-side filter
       const res = await fetch(u.toString(), { cache: "no-store", signal: ac.signal });
       const json: ApiResponse = await res.json();
 
       const all = (json.items || []).map(normalizeItem)
         .filter(x => x.status === "COMPLETED" || x.status === "DECLINED");
 
-      const filtered =
-        tab === "completed"
-          ? all.filter(x => x.status === "COMPLETED")
-          : tab === "declined"
-            ? all.filter(x => x.status === "DECLINED")
-            : all;
-
-      setRows(filtered);
+      setRows(all);
     } catch (e) {
       if ((e as any).name !== "AbortError") setRows([]);
     } finally {
@@ -111,12 +96,12 @@ export default function AppointmentsHistory(): JSX.Element {
     }
   };
 
-  useEffect(() => { load(); }, [tab, query]);
+  useEffect(() => { load(); }, []);
 
   useEffect(() => {
     const id = setInterval(load, 5000);
     return () => clearInterval(id);
-  }, [tab, query]);
+  }, []);
 
   useEffect(() => {
     const onVis = () => { if (document.visibilityState === "visible") load(); };
@@ -126,25 +111,45 @@ export default function AppointmentsHistory(): JSX.Element {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", load);
     };
-  }, [tab, query]);
+  }, []);
 
   useEffect(() => {
     const handler = () => load();
     window.addEventListener("appointments-updated", handler);
     return () => window.removeEventListener("appointments-updated", handler);
-  }, [tab, query]);
+  }, []);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  /* ------- client-side search like Reviews.tsx ------- */
+  const filteredByTab = useMemo(() => {
+    if (tab === "completed") return rows.filter(x => x.status === "COMPLETED");
+    if (tab === "declined")  return rows.filter(x => x.status === "DECLINED");
+    return rows;
+  }, [rows, tab]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return filteredByTab;
+    return filteredByTab.filter(r =>
+      (r.patientName || "").toLowerCase().includes(q) ||
+      (r.doctor || "").toLowerCase().includes(q) ||
+      (r.service || "").toLowerCase().includes(q) ||
+      (r.date || "").toLowerCase().includes(q) ||
+      (r.timeStart || "").toLowerCase().includes(q) ||
+      (r.status === "DECLINED" ? "declined" : "completed").includes(q)
+    );
+  }, [filteredByTab, query]);
+
   const sortedRows = useMemo(() => {
-    const copy = [...rows];
+    const copy = [...filtered];
     copy.sort((a, b) => {
       const aKey = `${a.date} ${a.timeStart}`;
       const bKey = `${b.date} ${b.timeStart}`;
       return sortAsc ? aKey.localeCompare(bKey) : bKey.localeCompare(aKey);
     });
     return copy;
-  }, [rows, sortAsc]);
+  }, [filtered, sortAsc]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
@@ -173,7 +178,7 @@ export default function AppointmentsHistory(): JSX.Element {
             <div>
               <h2 className="text-black text-xl font-semibold leading-tight">Appointments History</h2>
               <p className="text-black/80 text-sm leading-tight">
-                {loading ? "Loading…" : `You have ${rows.length} past appointments.`}
+                {loading ? "Loading…" : `You have ${filtered.length} past appointments.`}
               </p>
             </div>
 
@@ -271,7 +276,7 @@ export default function AppointmentsHistory(): JSX.Element {
                     );
                   })}
 
-                  {rows.length === 0 && !loading && (
+                  {sortedRows.length === 0 && !loading && (
                     <tr>
                       <td colSpan={6} className="py-6 text-center text-sm text-gray-500">No records.</td>
                     </tr>

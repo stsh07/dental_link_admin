@@ -30,11 +30,7 @@ const prettyDate = (ymd?: string | null) => {
   if (!ymd) return "-";
   const [y, m, d] = ymd.split("-").map(Number);
   const dt = new Date(Date.UTC(y || 1970, (m || 1) - 1, d || 1));
-  return dt.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "long",
-    day: "2-digit",
-  });
+  return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "2-digit" });
 };
 
 export default function Patients(): JSX.Element {
@@ -48,8 +44,7 @@ export default function Patients(): JSX.Element {
   const [err, setErr] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
-  const load = async (search: string) => {
-    // list fetch only for list view
+  const load = async () => {
     abortRef.current?.abort();
     const ac = new AbortController();
     abortRef.current = ac;
@@ -58,13 +53,8 @@ export default function Patients(): JSX.Element {
     try {
       const u = new URL(`${API_BASE}/api/admin/patients`);
       u.searchParams.set("page", "1");
-      u.searchParams.set("pageSize", "100");
-      if (search.trim()) u.searchParams.set("search", search.trim());
-
-      const res = await fetch(u.toString(), {
-        cache: "no-store",
-        signal: ac.signal,
-      });
+      u.searchParams.set("pageSize", "1000");
+      const res = await fetch(u.toString(), { cache: "no-store", signal: ac.signal });
       const json: ApiResponse = await res.json();
       if (!res.ok) throw new Error((json as any).error || "Failed to load patients");
       setRows(json.items || []);
@@ -78,31 +68,35 @@ export default function Patients(): JSX.Element {
     }
   };
 
-  // fetch list ONLY when we're NOT on /patients/:id
   useEffect(() => {
     if (isDetail) return;
-    load(query);
-    return () => {
-      abortRef.current?.abort();
-    };
-  }, [query, isDetail]);
+    load();
+    return () => abortRef.current?.abort();
+  }, [isDetail]);
 
-  // refresh list on custom events, but also only in list view
   useEffect(() => {
     if (isDetail) return;
-    const onUpdate = () => load(query);
+    const onUpdate = () => load();
     window.addEventListener("patients-updated", onUpdate);
     window.addEventListener("appointments-updated", onUpdate);
     return () => {
       window.removeEventListener("patients-updated", onUpdate);
       window.removeEventListener("appointments-updated", onUpdate);
     };
-  }, [isDetail, query]);
+  }, [isDetail]);
 
-  const totalPatients = rows.length;
-  const displayRows = useMemo(() => rows, [rows]);
+  const filteredRows = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((p) =>
+      (p.name || "").toLowerCase().includes(q) ||
+      (p.email || "").toLowerCase().includes(q) ||
+      (p.phone || "").toLowerCase().includes(q)
+    );
+  }, [rows, query]);
 
-  /* ---------- DETAIL VIEW ( /patients/:id ) ---------- */
+  const totalPatients = filteredRows.length;
+
   if (isDetail) {
     return (
       <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
@@ -113,7 +107,6 @@ export default function Patients(): JSX.Element {
             <div />
           </header>
           <div className="flex-1 overflow-y-auto px-8 pt-4 pb-8">
-            {/* pass the id so later you can fetch the real data */}
             <PatientsPopup patientId={Number(id)} />
           </div>
         </main>
@@ -121,7 +114,6 @@ export default function Patients(): JSX.Element {
     );
   }
 
-  /* ---------- LIST VIEW ( /patients ) ---------- */
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-gray-50">
       <Sidebar />
@@ -147,16 +139,9 @@ export default function Patients(): JSX.Element {
             <div>
               <h2 className="text-black text-xl font-semibold leading-tight">Patients List</h2>
               <p className="text-black/80 text-sm leading-tight">
-                {loading
-                  ? "Loading…"
-                  : err
-                  ? `Error: ${err}`
-                  : `You have ${totalPatients} patients.`}
+                {loading ? "Loading…" : err ? `Error: ${err}` : `You have ${totalPatients} patients.`}
               </p>
             </div>
-            <button className="bg-[#30b8de] hover:bg-[#2bacd0] text-white rounded-lg h-[36px] px-5 text-sm font-medium">
-              + Add Patient
-            </button>
           </div>
 
           <div className="rounded-lg border border-[#c4c4c4] bg-white shadow">
@@ -174,31 +159,25 @@ export default function Patients(): JSX.Element {
 
                 <thead>
                   <tr className="border-b">
-                    {["Patient", "Age", "Gender", "Email", "Contact", "Last Visit", ""].map(
-                      (head) => (
-                        <th
-                          key={head}
-                          className={`text-sm md:text-base font-bold text-gray-900 py-3 ${
-                            head === "Patient" ? "pl-8 text-left" : "px-4 text-left"
-                          }`}
-                        >
-                          {head}
-                        </th>
-                      )
-                    )}
+                    {["Patient", "Age", "Gender", "Email", "Contact", "Last Visit", ""].map((head) => (
+                      <th
+                        key={head}
+                        className={`text-sm md:text-base font-bold text-gray-900 py-3 ${
+                          head === "Patient" ? "pl-8 text-left" : "px-4 text-left"
+                        }`}
+                      >
+                        {head}
+                      </th>
+                    ))}
                   </tr>
                 </thead>
 
                 <tbody>
-                  {displayRows.map((p) => (
+                  {filteredRows.map((p) => (
                     <tr key={p.id} className="border-b border-gray-200 hover:bg-gray-50">
                       <td className="py-3 pl-8 text-sm font-medium text-gray-900">
                         <div className="flex items-center gap-3">
-                          <img
-                            src={profile}
-                            alt={`${p.name} profile`}
-                            className="w-9 h-9 rounded-full bg-white object-cover"
-                          />
+                          <img src={profile} alt={`${p.name} profile`} className="w-9 h-9 rounded-full bg-white object-cover" />
                           <span className="truncate">{p.name}</span>
                         </div>
                       </td>
@@ -206,9 +185,7 @@ export default function Patients(): JSX.Element {
                       <td className="py-3 px-4 text-gray-700 text-sm">{p.gender ?? "-"}</td>
                       <td className="py-3 px-4 text-gray-700 text-sm">{p.email ?? "-"}</td>
                       <td className="py-3 px-4 text-gray-700 text-sm">{p.phone ?? "-"}</td>
-                      <td className="py-3 px-4 text-gray-700 text-sm">
-                        {prettyDate(p.lastVisit)}
-                      </td>
+                      <td className="py-3 px-4 text-gray-700 text-sm">{prettyDate(p.lastVisit)}</td>
                       <td className="py-3 px-4">
                         <button
                           type="button"
@@ -226,7 +203,7 @@ export default function Patients(): JSX.Element {
                     </tr>
                   ))}
 
-                  {!loading && !err && displayRows.length === 0 && (
+                  {!loading && !err && filteredRows.length === 0 && (
                     <tr>
                       <td colSpan={7} className="py-6 text-center text-sm text-gray-500">
                         No patients found.

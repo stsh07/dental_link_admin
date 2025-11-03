@@ -1,5 +1,4 @@
-// client/components/ActiveAppointments.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BellIcon, SearchIcon, ChevronRight, ArrowUpDownIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "./Sidebar";
@@ -12,15 +11,14 @@ type ApiAppointment = {
   id: number;
   patientName: string;
   doctor: string;
-  date: string;       // YYYY-MM-DD
-  timeStart: string;  // HH:MM
+  date: string;
+  timeStart: string;
   service: string;
   status: "PENDING" | "CONFIRMED" | "DECLINED" | "COMPLETED";
 };
 
 type ApiResponse = { page: number; pageSize: number; total: number; items: any[] };
 
-/* ---------- Time & date helpers ---------- */
 const parseHHMM = (val?: string | null): { h: number; m: number } | null => {
   if (!val || typeof val !== "string") return null;
   const m = val.match(/^(\d{1,2}):(\d{2})$/);
@@ -53,7 +51,6 @@ const fmtDatePretty = (ymd?: string | null) => {
   return dt.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "2-digit" });
 };
 
-/* ---------- UI helpers ---------- */
 const uiStatus = (s: ApiAppointment["status"]) =>
   s === "CONFIRMED" ? "Approved" :
   s === "PENDING"  ? "Pending"  :
@@ -68,44 +65,13 @@ const badgeClasses = (s: ApiAppointment["status"]) =>
 
 const isActive = (s: ApiAppointment["status"]) => s === "PENDING" || s === "CONFIRMED";
 
-/* ---------- Robust normalizer ---------- */
 const normalizeItem = (raw: any): ApiAppointment => {
   const id = Number(raw.id ?? 0);
-
-  const patientName = String(
-    raw.patientName ??
-    raw.full_name ??
-    raw.name ??
-    ""
-  ).trim();
-
-  const doctor = String(
-    raw.doctor ??
-    raw.doctorName ??
-    raw.dentist ??
-    ""
-  ).trim();
-
-  const date = String(
-    raw.date ??
-    raw.preferredDate ??
-    ""
-  ).slice(0, 10);
-
-  const timeStart = String(
-    raw.timeStart ??
-    raw.preferredTime ??
-    ""
-  ).slice(0, 5);
-
-  const service = String(
-    raw.service ??
-    raw.serviceName ??
-    raw.procedureName ??
-    raw.procedure ??
-    ""
-  ).trim();
-
+  const patientName = String(raw.patientName ?? raw.full_name ?? raw.name ?? "").trim();
+  const doctor = String(raw.doctor ?? raw.doctorName ?? raw.dentist ?? "").trim();
+  const date = String(raw.date ?? raw.preferredDate ?? "").slice(0, 10);
+  const timeStart = String(raw.timeStart ?? raw.preferredTime ?? "").slice(0, 5);
+  const service = String(raw.service ?? raw.serviceName ?? raw.procedureName ?? raw.procedure ?? "").trim();
   const status = (String(raw.status ?? "PENDING").toUpperCase() as ApiAppointment["status"]);
   return { id, patientName, doctor, date, timeStart, service, status };
 };
@@ -123,42 +89,60 @@ export default function ActiveAppointments(): JSX.Element {
   const [selected, setSelected] = useState<AppointmentDetail | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
-  // sort state (false = Newest first)
   const [sortAsc, setSortAsc] = useState<boolean>(false);
+  const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        setLoading(true);
-        setError("");
-        const u = new URL("http://localhost:4002/api/admin/appointments");
-        u.searchParams.set("page", "1");
-        u.searchParams.set("pageSize", "500");
-        if (query.trim()) u.searchParams.set("search", query.trim());
-
-        const res = await fetch(u.toString(), { cache: "no-store" });
-        const json: ApiResponse = await res.json();
-        if (!res.ok || (json as any).error) throw new Error((json as any).error || "load failed");
-
-        setItems((json.items || []).map(normalizeItem));
-      } catch (e: any) {
+  const load = async () => {
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    try {
+      setLoading(true);
+      setError("");
+      const u = new URL("http://localhost:4002/api/admin/appointments");
+      u.searchParams.set("page", "1");
+      u.searchParams.set("pageSize", "500");
+      const res = await fetch(u.toString(), { cache: "no-store", signal: ac.signal });
+      const json: ApiResponse = await res.json();
+      if (!res.ok || (json as any).error) throw new Error((json as any).error || "load failed");
+      setItems((json.items || []).map(normalizeItem));
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
         setError(e?.message || "Failed to load");
         setItems([]);
-      } finally {
-        setLoading(false);
       }
-    };
-    run();
-  }, [query]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const id = setInterval(load, 5000);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const filtered = useMemo(() => {
     const base = items.filter(a => isActive(a.status));
-    if (tab === "pending")  return base.filter(a => a.status === "PENDING");
-    if (tab === "approved") return base.filter(a => a.status === "CONFIRMED");
-    return base;
-  }, [items, tab]);
+    const byTab =
+      tab === "pending"  ? base.filter(a => a.status === "PENDING") :
+      tab === "approved" ? base.filter(a => a.status === "CONFIRMED") :
+                           base;
 
-  // sort by date + timeStart
+    const q = query.trim().toLowerCase();
+    if (!q) return byTab;
+
+    return byTab.filter(a =>
+      (a.patientName || "").toLowerCase().includes(q) ||
+      (a.doctor || "").toLowerCase().includes(q) ||
+      (a.service || "").toLowerCase().includes(q) ||
+      (a.date || "").toLowerCase().includes(q) ||
+      (a.timeStart || "").toLowerCase().includes(q) ||
+      uiStatus(a.status).toLowerCase().includes(q)
+    );
+  }, [items, tab, query]);
+
   const sorted = useMemo(() => {
     const copy = [...filtered];
     copy.sort((a, b) => {
@@ -206,11 +190,10 @@ export default function ActiveAppointments(): JSX.Element {
       status: a.status,
     });
     setOpen(true);
-
     try {
       const detail = await fetchDetails(a.id);
       setSelected(prev => prev ? { ...prev, ...detail } as AppointmentDetail : prev);
-    } catch { /* ignore */ }
+    } catch {}
   };
 
   const updateStatusLocal = (id: number, status: ApiAppointment["status"]) => {
@@ -315,10 +298,6 @@ export default function ActiveAppointments(): JSX.Element {
             </div>
 
             <div className="flex items-center gap-6">
-              <button className="bg-[#30b8de] hover:bg-[#2bacd0] text-white rounded-lg h-[36px] px-5 text-sm font-medium">
-                + Add Appointment
-              </button>
-
               <div className="flex items-center gap-5">
                 <button
                   onClick={() => setTab("all")}
@@ -363,8 +342,6 @@ export default function ActiveAppointments(): JSX.Element {
                     <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
                       Doctor
                     </th>
-
-                    {/* Date + inline sort toggle (icon only) */}
                     <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
                       <div className="flex items-center gap-2">
                         <span>Date</span>
@@ -378,7 +355,6 @@ export default function ActiveAppointments(): JSX.Element {
                         </button>
                       </div>
                     </th>
-
                     <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
                       Time
                     </th>
@@ -388,9 +364,7 @@ export default function ActiveAppointments(): JSX.Element {
                     <th className="text-sm md:text-base font-bold text-gray-900 py-3 px-4 text-left">
                       Status
                     </th>
-                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 pr-8 text-right">
-                      {/* chevron col */}
-                    </th>
+                    <th className="text-sm md:text-base font-bold text-gray-900 py-3 pr-8 text-right"></th>
                   </tr>
                 </thead>
 
