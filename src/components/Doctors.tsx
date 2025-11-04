@@ -1,12 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "./Sidebar";
-import {
-  Plus,
-  Bell as BellIcon,
-  Search as SearchIcon,
-  Calendar,
-  Users,
-} from "lucide-react";
+import { Plus, Bell as BellIcon, Search as SearchIcon, Calendar, Users } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import Modal from "./modal";
 import AddDoctorPopup from "../popups/addDoctor";
@@ -20,9 +14,61 @@ import AppointmentPopup, { AppointmentDetail } from "../popups/AppointmentPopup"
 function joinUrl(base: string, path: string) {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
 }
+
 const API_BASE =
   (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/+$/, "") ||
   "http://localhost:4002";
+
+/** Where the *user website* (Next.js) is hosted — this serves the stock doctor images */
+const FRONTEND_ORIGIN =
+  (import.meta as any).env?.VITE_FRONTEND_ORIGIN?.toString()?.replace(/\/+$/, "") ||
+  "http://localhost:3000";
+
+/** Stock images (same ones used on the About Us page) */
+const DOCTOR_STOCKS: Record<string, string> = {
+  "Ismael Junio": `${FRONTEND_ORIGIN}/drismael.svg`,
+  "Krystal Cruz": `${FRONTEND_ORIGIN}/drkrystal.svg`,
+  "Miguel Suarez": `${FRONTEND_ORIGIN}/drmiguel.svg`,
+  "Brenda Estrada": `${FRONTEND_ORIGIN}/drbrenda.svg`,
+};
+
+/**
+ * Build a usable photo URL given:
+ *  - raw DB value (profile_url) or
+ *  - stock fallback keyed by doctor's full name.
+ *
+ * Rules:
+ *  - http(s):// ... -> use as-is (add cache-buster)
+ *  - starts with "/uploads" or "uploads" -> serve from API_BASE
+ *  - starts with "/" (site asset) -> use as-is (Next/Vite public)
+ *  - otherwise treat as filename under /uploads/doctors
+ *  - if nothing available -> use DOCTOR_STOCKS[name]
+ */
+function buildPhotoUrl(name: string, raw?: string | null) {
+  const buster = `?t=${Date.now()}`;
+
+  if (raw && typeof raw === "string") {
+    const val = raw.trim();
+
+    // Absolute external URL
+    if (/^https?:\/\//i.test(val)) return `${val}${buster}`;
+
+    // API uploads (absolute or relative)
+    if (val.startsWith("/uploads/")) return joinUrl(API_BASE, val) + buster;
+    if (val.startsWith("uploads/")) return joinUrl(API_BASE, "/" + val) + buster;
+
+    // Site asset (e.g. "/images/foo.svg" or "/drkrystal.svg")
+    if (val.startsWith("/")) return val; // let the current app/origin serve it
+
+    // Plain filename -> assume /uploads/doctors/<file>
+    const filename = val.split(/[/\\]/).pop() || "";
+    if (filename) return joinUrl(API_BASE, `/uploads/doctors/${filename}`) + buster;
+  }
+
+  // Fallback to stock by full name (from About Us)
+  const stock = DOCTOR_STOCKS[(name || "").trim()];
+  return stock || null;
+}
 
 type DoctorRow = {
   id: number;
@@ -42,35 +88,44 @@ function statusClass(status?: string | null) {
   return "text-gray-500";
 }
 
-function buildPhotoUrl(raw?: string | null) {
-  if (!raw) return null;
-  if (/^https?:\/\//i.test(raw)) return `${raw}?t=${Date.now()}`;
-  const filename = raw.split(/[/\\]/).pop() || "";
-  if (!filename) return null;
-  return joinUrl(API_BASE, `/uploads/doctors/${filename}?t=${Date.now()}`);
-}
-
+/** Render a circular avatar with image -> fallback to initials on error */
 function Avatar({ name, photo }: { name: string; photo?: string | null }) {
-  const initials = name
+  const initials = (name || "")
     .split(" ")
-    .map((n) => n[0])
-    .join("")
+    .filter(Boolean)
+    .map((n) => n[0]!.toUpperCase())
     .slice(0, 2)
-    .toUpperCase();
-  const src = buildPhotoUrl(photo);
+    .join("");
+
+  const [errored, setErrored] = useState(false);
+  const [src, setSrc] = useState<string | null>(() => buildPhotoUrl(name, photo));
+
+  useEffect(() => {
+    // Recompute src if input changes or we cleared an error
+    setSrc(buildPhotoUrl(name, photo));
+    setErrored(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, photo]);
+
+  // If this source fails, go straight to initials (no blank circle)
+  const handleError = () => {
+    setErrored(true);
+    setSrc(null);
+  };
+
   return (
     <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center text-blue-700 font-semibold overflow-hidden border border-blue-200">
-      {src ? (
+      {src && !errored ? (
         <img
           src={src}
           alt={name}
           className="w-full h-full object-cover"
-          onError={(e) => {
-            (e.currentTarget as HTMLImageElement).style.display = "none";
-          }}
+          onError={handleError}
+          loading="lazy"
+          decoding="async"
         />
       ) : (
-        initials
+        <span>{initials || "DR"}</span>
       )}
     </div>
   );
@@ -90,7 +145,10 @@ const Doctors: React.FC = () => {
   const navigate = useNavigate();
 
   async function loadDoctors(signal?: AbortSignal) {
-    const res = await fetch(joinUrl(API_BASE, "/api/doctors"), { signal, cache: "no-store" });
+    const res = await fetch(joinUrl(API_BASE, "/api/doctors"), {
+      signal,
+      cache: "no-store",
+    });
     const json = await res.json();
     if (!res.ok || !json.ok) throw new Error(json.error || "Load doctors failed");
     return json.doctors as DoctorRow[];
@@ -138,7 +196,7 @@ const Doctors: React.FC = () => {
     };
   }, []);
 
-  // Search by doctor name only (per request)
+  // Search by doctor name only
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return rows;
@@ -185,7 +243,7 @@ const Doctors: React.FC = () => {
   const unreadCount = notifications.filter((n) => !n.read).length;
 
   /* --------------------------------------------------
-     Appointment popup + actions (approve/decline/complete)
+     Appointment popup + actions
   -------------------------------------------------- */
   const [apptOpen, setApptOpen] = useState(false);
   const [apptData, setApptData] = useState<AppointmentDetail | null>(null);
@@ -327,7 +385,7 @@ const Doctors: React.FC = () => {
               />
             </div>
 
-            {/* Notifications dropdown (same pattern) */}
+            {/* Notifications dropdown */}
             <div ref={notifWrapRef} className="relative">
               <button
                 type="button"
