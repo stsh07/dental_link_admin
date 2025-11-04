@@ -1,4 +1,3 @@
-// server/src/routes/appointments.js
 const express = require("express");
 const router = express.Router();
 const { pool } = require("../db");
@@ -41,9 +40,7 @@ function buildSlots(date, existingTimes) {
   });
 }
 
-/* =========================
-   SLOTS (user form)
-   ========================= */
+/* ---------- SLOTS (user form) ---------- */
 router.get("/appointments/slots", async (req, res) => {
   try {
     const date = req.query.date;
@@ -67,9 +64,60 @@ router.get("/appointments/slots", async (req, res) => {
   }
 });
 
-/* =========================
-   CREATE (user site)
-   ========================= */
+/* ---------- CHECK availability (date+time+dentist, max 4/day) ---------- */
+router.get("/appointments/check", async (req, res) => {
+  try {
+    const date = (req.query.date || "").trim();
+    const time = toHM((req.query.time || "").trim());
+    const dentistId = Number(req.query.dentistId);
+    if (!date || !time || !Number.isFinite(dentistId))
+      return res.status(400).json({ ok: false, error: "BAD_PARAMS" });
+
+    const [dupRows] = await pool.query(
+      `
+      SELECT COUNT(*) AS c
+      FROM appointments
+      WHERE preferred_date = ?
+        AND preferred_time = ?
+        AND dentist_id = ?
+        AND UPPER(status) IN ('PENDING','CONFIRMED','APPROVED')
+      `,
+      [date, time, dentistId]
+    );
+    if (dupRows[0].c > 0) {
+      return res.status(409).json({
+        ok: false,
+        code: "SLOT_TAKEN",
+        message: "That time is already picked for the selected dentist. Please choose another.",
+      });
+    }
+
+    const [dayRows] = await pool.query(
+      `
+      SELECT COUNT(*) AS c
+      FROM appointments
+      WHERE preferred_date = ?
+        AND dentist_id = ?
+        AND UPPER(status) IN ('PENDING','CONFIRMED','APPROVED')
+      `,
+      [date, dentistId]
+    );
+    if (dayRows[0].c >= 4) {
+      return res.status(409).json({
+        ok: false,
+        code: "FULL_DAY",
+        message: "Selected dentist is fully booked for that date.",
+      });
+    }
+
+    res.json({ ok: true, available: true });
+  } catch (err) {
+    console.error("check err:", err);
+    res.status(500).json({ ok: false, error: "CHECK_FAILED" });
+  }
+});
+
+/* ---------- CREATE (user site) ---------- */
 router.post("/appointments", async (req, res) => {
   try {
     const b = req.body || {};
@@ -80,12 +128,50 @@ router.post("/appointments", async (req, res) => {
     const phone = b.phone ?? null;
     const address = b.address ?? null;
     const preferredDate = b.preferredDate || b.preferred_date;
-    const preferredTime = b.preferredTime || b.preferred_time;
+    const preferredTime = toHM(b.preferredTime || b.preferred_time);
     const dentistId = b.dentistId || b.dentist_id;
     const procedureId = b.procedureId || b.procedure_id || b.service_id;
 
     if (!fullName || !email || !preferredDate || !preferredTime || !dentistId || !procedureId) {
       return res.status(400).json({ ok: false, error: "Missing required fields" });
+    }
+
+    // enforce unique slot and 4-per-day rule
+    const [dupRows] = await pool.query(
+      `
+      SELECT COUNT(*) AS c
+      FROM appointments
+      WHERE preferred_date = ?
+        AND preferred_time = ?
+        AND dentist_id = ?
+        AND UPPER(status) IN ('PENDING','CONFIRMED','APPROVED')
+      `,
+      [preferredDate, preferredTime, Number(dentistId)]
+    );
+    if (dupRows[0].c > 0) {
+      return res.status(409).json({
+        ok: false,
+        code: "SLOT_TAKEN",
+        message: "That time is already picked for the selected dentist. Please choose another.",
+      });
+    }
+
+    const [dayRows] = await pool.query(
+      `
+      SELECT COUNT(*) AS c
+      FROM appointments
+      WHERE preferred_date = ?
+        AND dentist_id = ?
+        AND UPPER(status) IN ('PENDING','CONFIRMED','APPROVED')
+      `,
+      [preferredDate, Number(dentistId)]
+    );
+    if (dayRows[0].c >= 4) {
+      return res.status(409).json({
+        ok: false,
+        code: "FULL_DAY",
+        message: "Selected dentist is fully booked for that date.",
+      });
     }
 
     const [result] = await pool.query(
@@ -114,9 +200,7 @@ router.post("/appointments", async (req, res) => {
   }
 });
 
-/* =========================
-   ADMIN LIST
-   ========================= */
+/* ---------- ADMIN LIST ---------- */
 router.get("/admin/appointments", async (req, res) => {
   try {
     const page = Number(req.query.page || 1);
@@ -194,9 +278,7 @@ router.get("/admin/appointments", async (req, res) => {
   }
 });
 
-/* =========================
-   ADMIN DETAIL (popup)
-   ========================= */
+/* ---------- ADMIN DETAIL (popup) ---------- */
 router.get("/admin/appointments/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -235,9 +317,7 @@ router.get("/admin/appointments/:id", async (req, res) => {
   }
 });
 
-/* =========================
-   ADMIN APPROVE / DECLINE / COMPLETE
-   ========================= */
+/* ---------- ADMIN APPROVE / DECLINE / COMPLETE ---------- */
 router.post("/admin/appointments/:id/approve", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -246,7 +326,6 @@ router.post("/admin/appointments/:id/approve", async (req, res) => {
     const [r] = await pool.query("UPDATE appointments SET status='CONFIRMED' WHERE id = ?", [id]);
     if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
 
-    // Also mark its notification as read (ignore if table missing)
     try {
       await pool.query(
         "UPDATE notifications SET is_read = 1 WHERE type='APPOINTMENT_SUBMITTED' AND ref_id = ?",
@@ -305,17 +384,14 @@ router.post("/admin/appointments/:id/complete", async (req, res) => {
   }
 });
 
-/* =========================
-   GENERIC STATUS (PATCH/POST/PUT)
-   ========================= */
+/* ---------- GENERIC STATUS ---------- */
 async function updateStatusHandler(req, res) {
   try {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: "BAD_ID" });
 
     const body = req.body || {};
-    let newStatus = body.status || body.action || "";
-    newStatus = String(newStatus).trim().toUpperCase();
+    let newStatus = (body.status || body.action || "").toString().trim().toUpperCase();
 
     if (newStatus === "APPROVE" || newStatus === "APPROVED") newStatus = "CONFIRMED";
     if (newStatus === "DECLINE") newStatus = "DECLINED";
@@ -329,7 +405,6 @@ async function updateStatusHandler(req, res) {
     ]);
     if (r.affectedRows === 0) return res.status(404).json({ ok: false, error: "NOT_FOUND" });
 
-    // Mark notification read when the appointment leaves PENDING
     if (newStatus !== "PENDING") {
       try {
         await pool.query(
@@ -349,10 +424,7 @@ router.post("/appointments/:id/status", updateStatusHandler);
 router.patch("/appointments/:id/status", updateStatusHandler);
 router.put("/appointments/:id/status", updateStatusHandler);
 
-/* =========================
-   USER HISTORY / SINGLE / DOCTOR HISTORY / TOP SERVICES
-   (unchanged below)
-   ========================= */
+/* ---------- USER HISTORY / SINGLE / DOCTOR HISTORY / TOP SERVICES ---------- */
 router.get("/appointments/user/history", async (req, res) => {
   try {
     const email = (req.query.email || "").trim().toLowerCase();
